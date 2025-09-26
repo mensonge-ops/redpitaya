@@ -623,26 +623,34 @@ class SPGDController:
                 perturbation,
             )
             for local_iter in range(stage.iterations):
-                direction = self.rng.choice([-1.0, 1.0], size=2)
+                direction = self.rng.choice([-1.0, 1.0], size=control.size)
+                if np.all(direction == direction[0]):
+                    direction[0] *= -1.0
                 delta = perturbation * direction
                 metric_plus = self._evaluate(control + delta)
                 metric_minus = self._evaluate(control - delta)
                 gradient = (metric_plus - metric_minus) / (2.0 * delta)
                 control = control + gain * gradient
                 control = np.clip(control, *config.control_limits)
-                nominal_metric = self._evaluate(control)
+                current_command = control.copy()
+                nominal_metric = self._evaluate(current_command)
 
                 metric_history.append(nominal_metric)
-                control_history.append(control.copy())
+                control_history.append(current_command.copy())
 
                 if iteration_callback is not None:
-                    iteration_callback(nominal_metric, control.copy())
+                    iteration_callback(nominal_metric, current_command.copy())
 
                 if nominal_metric > best_metric:
                     best_metric = nominal_metric
-                    best_control = control.copy()
+                    best_control = current_command.copy()
+                    control = current_command
+                else:
+                    control = best_control.copy()
+                    self.hardware.set_control(control)
 
                 perturbation *= config.perturbation_decay
+                gain *= config.perturbation_decay
                 completed_iterations += 1
                 _LOGGER.debug(
                     "Stage %d iter %04d/%04d metric=% .5f control=%s perturb=%.5f gain=%.5f",
@@ -650,7 +658,7 @@ class SPGDController:
                     local_iter + 1,
                     stage.iterations,
                     nominal_metric,
-                    np.array2string(control, precision=4),
+                    np.array2string(current_command, precision=4),
                     perturbation,
                     gain,
                 )
