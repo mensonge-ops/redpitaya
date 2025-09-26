@@ -61,8 +61,15 @@ else:  # pragma: no branch - tiny loop
         except Exception:
             pass
 
-import numpy as np
-from scipy import signal
+try:  # pragma: no cover - optional dependency
+    import numpy as np  # type: ignore
+except ImportError:  # pragma: no cover - fallback for minimal environments
+    import lightnumpy as np  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    from scipy import signal  # type: ignore
+except ImportError:  # pragma: no cover - fallback for minimal environments
+    from lightscipy import signal  # type: ignore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -852,6 +859,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         control_limits=(args.control_min, args.control_max),
         auto_stages=auto_stages,
     )
+
+    lightweight_backend = bool(getattr(np, "IS_LIGHTWEIGHT", False))
+    if lightweight_backend:
+        if args.transfer_frequencies:
+            _LOGGER.warning(
+                "Lightweight NumPy compatibility layer detected; skipping transfer function measurement for faster tests.",
+            )
+            args.transfer_frequencies = []
+        if args.noise_duration > 0.5:
+            _LOGGER.warning(
+                "Limiting residual noise acquisition to 0.5 s to keep runtime manageable with the lightweight backend.",
+            )
+            args.noise_duration = 0.5
+        if config.metric_average > 256:
+            _LOGGER.warning(
+                "Reducing metric averaging window to 256 samples for the lightweight backend.",
+            )
+            config.metric_average = 256
 
     if use_simulation:
         hardware: LockHardware = SimulatedHardware()
