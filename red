@@ -15,7 +15,7 @@ can be tested without connecting to the hardware by passing ``--simulate``.
 Example usage with hardware::
 
     python examples/red_pitaya_spgd_lock.py --host 192.168.1.100 \
-        --iterations 600 --gain 0.08 --perturbation 0.04
+        --iterations 600 --gain 0.02 --perturbation 0.10
 
 Example usage in simulation mode::
 
@@ -93,8 +93,8 @@ class SPGDConfig:
     """Configuration parameters for the SPGD controller."""
 
     iterations: int = 600
-    gain: float = 0.08
-    perturbation: float = 0.04
+    gain: float = 0.02
+    perturbation: float = 0.10
     perturbation_decay: float = 0.997
     settling_time: float = 0.005
     metric_average: int = 1024
