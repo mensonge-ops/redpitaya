@@ -49,15 +49,20 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
-import matplotlib
+try:
+    import matplotlib  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    matplotlib = None  # type: ignore[assignment]
+else:  # pragma: no branch - tiny loop
+    for backend in ("QtAgg", "Qt5Agg", "TkAgg"):
+        try:
+            matplotlib.use(backend)
+            break
+        except Exception:
+            pass
+
 import numpy as np
 from scipy import signal
-for backend in ("QtAgg", "Qt5Agg", "TkAgg"):
-    try:
-        matplotlib.use(backend)
-        break
-    except Exception:
-        pass
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -80,12 +85,12 @@ class SPGDAutoTuneStage:
 class SPGDConfig:
     """Configuration parameters for the SPGD controller."""
 
-    iterations: int = 500
-    gain: float = 0.05
-    perturbation: float = 0.05
-    perturbation_decay: float = 0.995
+    iterations: int = 600
+    gain: float = 0.08
+    perturbation: float = 0.04
+    perturbation_decay: float = 0.997
     settling_time: float = 0.005
-    metric_average: int = 2048
+    metric_average: int = 1024
     control_limits: Tuple[float, float] = (-1.8, 1.8)
     auto_stages: Optional[Sequence[SPGDAutoTuneStage]] = None
 
@@ -238,6 +243,12 @@ def build_auto_tune_schedule(iterations: int, stage_count: int) -> List[SPGDAuto
         SPGDAutoTuneStage(iterations=count, gain_scale=float(g), perturbation_scale=float(p))
         for count, g, p in zip(counts, gain_scales, perturb_scales)
     ]
+
+
+def wrap_to_pi(values: np.ndarray) -> np.ndarray:
+    """Wrap an array of angles to the ``[-pi, pi]`` interval."""
+
+    return (values + np.pi) % (2.0 * np.pi) - np.pi
 
 
 class LiveIntensityPlot:
@@ -458,9 +469,8 @@ class SimulatedHardware(LockHardware):
         self.drift_rate = drift_rate
         self.amplitude = amplitude
         self.rng = rng or np.random.default_rng(1234)
-        self._time = 0.0
         self._control = np.zeros(2, dtype=float)
-        self._phase_bias = self.rng.uniform(0, 2 * math.pi)
+        self._phase_bias = float(self.rng.uniform(-math.pi, math.pi))
 
     def set_control(self, control: Sequence[float]) -> None:
         control = np.asarray(control, dtype=float)
@@ -469,13 +479,14 @@ class SimulatedHardware(LockHardware):
         self._control = control.copy()
 
     def read_metric(self, num_samples: int) -> np.ndarray:
-        t = np.arange(num_samples, dtype=float) / self.sample_rate + self._time
-        phase_drift = self.drift_rate * t + self._phase_bias
+        increments = self.drift_rate * np.arange(num_samples, dtype=float) / self.sample_rate
+        phase_drift = wrap_to_pi(self._phase_bias + increments)
         field = self.amplitude * np.exp(1j * (phase_drift + self._control[0]))
-        field += self.amplitude * np.exp(1j * (self._control[1]))
+        field += self.amplitude * np.exp(1j * self._control[1])
         intensity = np.abs(field) ** 2
         noise = self.rng.normal(scale=self.noise_std, size=num_samples)
-        self._time += num_samples / self.sample_rate
+        total_advance = self.drift_rate * num_samples / self.sample_rate
+        self._phase_bias = float(wrap_to_pi(self._phase_bias + total_advance))
         return intensity + noise
 
 
