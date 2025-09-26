@@ -18,7 +18,7 @@ the generation of a concise textual summary of a locking experiment.
 Example usage with hardware::
 
     python examples/red_pitaya_spgd_lock.py --host 192.168.1.100 \
-        --iterations 600 --gain 0.08 --perturbation 0.04
+        --iterations 600 --gain 0.03 --perturbation 0.02
 
 Example usage in simulation mode::
 
@@ -418,11 +418,11 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5000, help="SCPI port")
     parser.add_argument("--simulate", action="store_true", help="Use the simulation backend")
     parser.add_argument("--iterations", type=int, default=400, help="Number of SPGD iterations")
-    parser.add_argument("--gain", type=float, default=0.08, help="SPGD gain")
+    parser.add_argument("--gain", type=float, default=0.03, help="SPGD gain")
     parser.add_argument(
         "--perturbation",
         type=float,
-        default=0.05,
+        default=0.02,
         help="SPGD perturbation amplitude",
     )
     parser.add_argument(
