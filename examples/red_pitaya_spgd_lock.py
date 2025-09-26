@@ -38,7 +38,7 @@ import math
 import random
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -245,6 +245,13 @@ class ControllerResult:
     drive_history: List[List[float]]
     intensity_history: List[float]
     gradients: List[List[float]]
+    locking_efficiency: List[float] = field(default_factory=list)
+    transmission_sweeps: List[Tuple[int, List[float], List[float]]] = field(
+        default_factory=list
+    )
+    noise_spectrum: Tuple[List[float], List[float]] = field(
+        default_factory=lambda: ([], [])
+    )
 
     def summary(self) -> str:
         if not self.intensity_history:
@@ -255,6 +262,40 @@ class ControllerResult:
             f"Collected {len(self.intensity_history)} samples. "
             f"Peak intensity {peak:.4f}, running average {avg:.4f}."
         )
+
+
+def _compute_locking_efficiency(samples: Sequence[float]) -> List[float]:
+    efficiencies: List[float] = []
+    if not samples:
+        return efficiencies
+
+    running_sum = 0.0
+    running_max = float("-inf")
+    for index, value in enumerate(samples, 1):
+        running_sum += value
+        if value > running_max:
+            running_max = value
+        average = running_sum / index
+        efficiency = average / running_max if running_max > 0 else 0.0
+        efficiencies.append(efficiency)
+    return efficiencies
+
+
+def _estimate_noise_spectrum(samples: Sequence[float]) -> Tuple[List[float], List[float]]:
+    if len(samples) < 4:
+        return [], []
+    try:  # pragma: no cover - optional dependency for plotting diagnostics
+        import numpy as np
+    except Exception:
+        return [], []
+
+    array = np.asarray(samples, dtype=float)
+    array = array - array.mean()
+    if not array.any():
+        return [], []
+    spectrum = np.abs(np.fft.rfft(array)) ** 2
+    freqs = np.fft.rfftfreq(array.size, d=1.0)
+    return freqs.tolist(), spectrum.tolist()
 
 
 class SPGDController:
@@ -295,7 +336,18 @@ class SPGDController:
                     f"drive {self._drive}"
                 )
 
-        return ControllerResult(drive_history, intensity_history, gradients)
+        locking_efficiency = _compute_locking_efficiency(intensity_history)
+        transmission = self._characterise_transmission()
+        noise_spectrum = _estimate_noise_spectrum(intensity_history)
+
+        return ControllerResult(
+            drive_history,
+            intensity_history,
+            gradients,
+            locking_efficiency,
+            transmission,
+            noise_spectrum,
+        )
 
     # ------------------------------------------------------------------
     def _spgd_step(self, gain: float, perturb: float) -> Tuple[List[float], float]:
@@ -406,6 +458,52 @@ class SPGDController:
         samples = [backend.measure(drive) for _ in range(sample_count)]
         return sum(samples) / len(samples)
 
+    # ------------------------------------------------------------------
+    def _characterise_transmission(self) -> List[Tuple[int, List[float], List[float]]]:
+        if not self.params.iterations:
+            return []
+
+        backend = self.backend.clone()
+        base_drive = list(self._drive)
+        span = max(self.params.perturbation * 6.0, 0.01)
+        if span <= 0.0:
+            return []
+
+        points = 41
+        sweeps: List[Tuple[int, List[float], List[float]]] = []
+        offsets = [
+            (-span / 2.0) + (span * index) / (points - 1)
+            for index in range(points)
+        ]
+
+        for channel in range(self.backend.num_channels):
+            axis: List[float] = []
+            intensities: List[float] = []
+            for offset in offsets:
+                drive = list(base_drive)
+                drive[channel] = base_drive[channel] + offset
+                intensity = self._measure(
+                    drive,
+                    backend=backend,
+                    settling_time=0.0,
+                    noise_duration=0.0,
+                )
+                axis.append(drive[channel])
+                intensities.append(intensity)
+
+            sweeps.append((channel, axis, intensities))
+
+        # Restore the base drive on the actual backend if we were unable to clone.
+        if backend is self.backend:
+            self._measure(
+                base_drive,
+                backend=self.backend,
+                settling_time=0.0,
+                noise_duration=0.0,
+            )
+
+        return sweeps
+
 
 # ---------------------------------------------------------------------------
 # CLI utilities
@@ -504,6 +602,19 @@ def _save_results(path: Path, result: ControllerResult) -> None:
     payload = {
         "drive_history": [list(drive) for drive in result.drive_history],
         "intensity_history": list(result.intensity_history),
+        "locking_efficiency": list(result.locking_efficiency),
+        "transmission_sweeps": [
+            {
+                "channel": channel,
+                "drive": list(drive_axis),
+                "intensity": list(intensity_values),
+            }
+            for channel, drive_axis, intensity_values in result.transmission_sweeps
+        ],
+        "noise_spectrum": {
+            "frequency": list(result.noise_spectrum[0]),
+            "power": list(result.noise_spectrum[1]),
+        },
     }
     with Path(path).expanduser().open("w", encoding="utf8") as handle:
         json.dump(payload, handle, indent=2)
@@ -518,20 +629,62 @@ def _maybe_plot(result: ControllerResult) -> None:
         import matplotlib.pyplot as plt
     except Exception as exc:  # pragma: no cover - optional dependency
         print(f"Unable to import matplotlib: {exc}")
-        _print_ascii_plot(result.intensity_history)
+        _print_ascii_plot(result)
         return
     xs = list(range(len(result.intensity_history)))
-    plt.figure("Red Pitaya SPGD Lock")
-    plt.plot(xs, result.intensity_history, label="Intensity")
-    plt.xlabel("Iteration")
-    plt.ylabel("Measured intensity (a.u.)")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    fig.suptitle("Red Pitaya SPGD Lock Diagnostics")
+
+    # Real-time detector intensity -------------------------------------------------
+    ax = axes[0][0]
+    ax.plot(xs, result.intensity_history, label="Intensity", color="tab:blue")
+    ax.set_title("Detector intensity")
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Intensity (a.u.)")
+    ax.grid(True)
+
+    # Locking efficiency ----------------------------------------------------------
+    ax = axes[0][1]
+    if result.locking_efficiency:
+        ax.plot(xs, result.locking_efficiency, color="tab:green")
+        ax.set_ylim(0.0, 1.05)
+    ax.set_title("Locking efficiency")
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel("Efficiency")
+    ax.grid(True)
+
+    # Transmission function -------------------------------------------------------
+    ax = axes[1][0]
+    if result.transmission_sweeps:
+        for channel, drive_axis, intensity_values in result.transmission_sweeps:
+            ax.plot(
+                drive_axis,
+                intensity_values,
+                label=f"Channel {channel + 1}",
+            )
+    ax.set_title("Post-lock transmission function")
+    ax.set_xlabel("Drive command (rad)")
+    ax.set_ylabel("Intensity (a.u.)")
+    ax.grid(True)
+    if result.transmission_sweeps:
+        ax.legend()
+
+    # Intensity noise -------------------------------------------------------------
+    ax = axes[1][1]
+    freqs, power = result.noise_spectrum
+    if freqs and power:
+        ax.semilogy(freqs, power, color="tab:red")
+    ax.set_title("Intensity noise spectrum")
+    ax.set_xlabel("Normalised frequency (1/iteration)")
+    ax.set_ylabel("Power (a.u.)")
+    ax.grid(True, which="both")
+
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
 
-def _print_ascii_plot(samples: Sequence[float], width: int = 80) -> None:
+def _print_ascii_plot(result: ControllerResult, width: int = 80) -> None:
+    samples = result.intensity_history
     if not samples:
         return
     if width <= 0:
@@ -563,6 +716,26 @@ def _print_ascii_plot(samples: Sequence[float], width: int = 80) -> None:
     print("ASCII intensity trend:")
     print(line)
     print(f"min={minimum:.4f}, max={maximum:.4f}")
+
+    if result.locking_efficiency:
+        last_eff = result.locking_efficiency[-1]
+        print(f"Final locking efficiency: {last_eff:.3f}")
+
+    if result.transmission_sweeps:
+        for channel, drive_axis, intensity_values in result.transmission_sweeps:
+            peak = max(intensity_values)
+            trough = min(intensity_values)
+            print(
+                f"Channel {channel + 1} transmission span: "
+                f"drive {drive_axis[0]:.4f}..{drive_axis[-1]:.4f}, "
+                f"intensity {trough:.4f}..{peak:.4f}"
+            )
+
+    if result.noise_spectrum[0] and result.noise_spectrum[1]:
+        peak_idx = max(range(len(result.noise_spectrum[1])), key=result.noise_spectrum[1].__getitem__)
+        freq = result.noise_spectrum[0][peak_idx]
+        power = result.noise_spectrum[1][peak_idx]
+        print(f"Dominant noise component: freq={freq:.4f}, power={power:.4e}")
 
 
 # ---------------------------------------------------------------------------
