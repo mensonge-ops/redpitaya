@@ -1,0 +1,14 @@
+{
+  "iterations": 600,
+  "gain": 0.05,
+  "perturbation": 0.04,
+  "averages": 1,
+  "sample_delay": 0.002,
+  "auto_tune": false,
+  "auto_tune_stages": 3,
+  "tolerance": 1e-4,
+  "settle": 40,
+  "report_every": 10,
+  "save_transfer_function": true,
+  "save_noise_spectrum": true
+}
