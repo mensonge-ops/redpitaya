@@ -92,9 +92,12 @@ class SPGDConfig:
     gain: float = 0.05
     perturbation: float = 0.05
     perturbation_decay: float = 0.995
+    min_gain_fraction: float = 0.25
+    min_perturbation_fraction: float = 0.25
     settling_time: float = 0.005
     metric_average: int = 2048
     control_limits: Tuple[float, float] = (-1.8, 1.8)
+    control_period: Optional[float] = None
     num_channels: int = 2
     auto_stages: Optional[Sequence[SPGDAutoTuneStage]] = None
 
@@ -168,6 +171,8 @@ def load_config_file(path: Path) -> ConfigFileDefaults:
         "metric_average",
         "control_min",
         "control_max",
+        "gain_floor_fraction",
+        "perturbation_floor_fraction",
         "transfer_frequencies",
         "transfer_amplitude",
         "transfer_duration",
@@ -193,6 +198,16 @@ def load_config_file(path: Path) -> ConfigFileDefaults:
             cli_args[key] = int(value)
             if cli_args[key] not in (1, 2):
                 raise ValueError("'channels' must be either 1 or 2")
+        elif key == "gain_floor_fraction":
+            value = float(value)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("'gain_floor_fraction' must be between 0 and 1")
+            cli_args[key] = value
+        elif key == "perturbation_floor_fraction":
+            value = float(value)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("'perturbation_floor_fraction' must be between 0 and 1")
+            cli_args[key] = value
         else:
             cli_args[key] = value
 
@@ -471,10 +486,11 @@ class SimulatedHardware(LockHardware):
         self,
         sample_rate: float = 10_000.0,
         noise_std: float = 0.01,
-        drift_rate: float = 0.2,
+        drift_rate: float = 0.05,
         amplitude: float = 1.0,
         rng: Optional[np.random.Generator] = None,
         num_channels: int = 2,
+        phase_per_unit: float = 1.0,
     ) -> None:
         if num_channels not in (1, 2):
             raise ValueError("num_channels must be 1 or 2")
@@ -487,6 +503,7 @@ class SimulatedHardware(LockHardware):
         self.num_channels = num_channels
         self._control = np.zeros(self.num_channels, dtype=float)
         self._phase_bias = self.rng.uniform(0, 2 * math.pi)
+        self.phase_per_unit = float(phase_per_unit)
 
     def set_control(self, control: Sequence[float]) -> None:
         control = np.asarray(control, dtype=float).ravel()
@@ -499,8 +516,10 @@ class SimulatedHardware(LockHardware):
         phase_drift = self.drift_rate * t + self._phase_bias
         control_a = self._control[0] if self.num_channels >= 1 else 0.0
         control_b = self._control[1] if self.num_channels >= 2 else 0.0
-        field = self.amplitude * np.exp(1j * (phase_drift + control_a))
-        field += self.amplitude * np.exp(1j * control_b)
+        phase_a = phase_drift + control_a * self.phase_per_unit
+        phase_b = control_b * self.phase_per_unit
+        field = self.amplitude * np.exp(1j * phase_a)
+        field += self.amplitude * np.exp(1j * phase_b)
         intensity = np.abs(field) ** 2
         noise = self.rng.normal(scale=self.noise_std, size=num_samples)
         self._time += num_samples / self.sample_rate
@@ -557,12 +576,15 @@ class LockingController:
         best_control = control.copy()
         completed_iterations = 0
         stage_boundaries: List[int] = []
+        clip_counters = [0] * control.size
 
         for stage_index, stage in enumerate(schedule, start=1):
             if stage.iterations <= 0:
                 continue
             gain = config.gain * stage.gain_scale
             perturbation = config.perturbation * stage.perturbation_scale
+            gain_floor = gain * config.min_gain_fraction
+            perturb_floor = perturbation * config.min_perturbation_fraction
             _LOGGER.info(
                 "Stage %d/%d: %d iterations (gain=%.4f, perturbation=%.4f)",
                 stage_index,
@@ -593,13 +615,43 @@ class LockingController:
                 if nominal_metric > best_metric:
                     best_metric = nominal_metric
                     best_control = current_command.copy()
-                    control = current_command
-                else:
-                    control = best_control.copy()
-                    self.hardware.set_control(control)
+                control = current_command.copy()
+                lower, upper = config.control_limits
+                if config.control_period:
+                    span = float(config.control_period)
+                    if span > 0:
+                        control = np.asarray(
+                            [lower + ((float(value) - lower) % span) for value in control],
+                            dtype=float,
+                        )
+                control = np.clip(control, lower, upper)
+                span = float(config.control_period) if config.control_period else 0.0
+                if span > 0:
+                    for idx in range(control.size):
+                        value = float(control[idx])
+                        if value <= lower + 1e-9:
+                            clip_counters[idx] += 1
+                            if clip_counters[idx] >= 5:
+                                control[idx] = min(value + span, upper)
+                                clip_counters[idx] = 0
+                        elif value >= upper - 1e-9:
+                            clip_counters[idx] += 1
+                            if clip_counters[idx] >= 5:
+                                control[idx] = max(value - span, lower)
+                                clip_counters[idx] = 0
+                        else:
+                            clip_counters[idx] = 0
+                    if any(abs(float(a) - float(b)) > 1e-9 for a, b in zip(control, current_command)):
+                        self.hardware.set_control(control)
 
-                perturbation *= config.perturbation_decay
-                gain *= config.perturbation_decay
+                perturbation = max(
+                    perturbation * config.perturbation_decay,
+                    perturb_floor,
+                )
+                gain = max(
+                    gain * config.perturbation_decay,
+                    gain_floor,
+                )
                 completed_iterations += 1
                 _LOGGER.debug(
                     "Stage %d iter %04d/%04d metric=% .5f control=%s perturb=%.5f gain=%.5f",
@@ -613,16 +665,16 @@ class LockingController:
                 )
             stage_boundaries.append(completed_iterations)
 
-        self._current_control = best_control.copy()
-        self.hardware.set_control(best_control)
+        self._current_control = control.copy()
+        self.hardware.set_control(self._current_control)
         final_metric = self._measure_metric()
         metric_history.append(final_metric)
-        control_history.append(best_control.copy())
+        control_history.append(self._current_control.copy())
 
         return LockingResult(
             control_history=np.asarray(control_history),
             metric_history=np.asarray(metric_history),
-            final_control=best_control,
+            final_control=self._current_control.copy(),
             final_metric=final_metric,
             stages=schedule,
             stage_boundaries=np.asarray(stage_boundaries, dtype=int),
@@ -775,6 +827,16 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--perturbation", type=float, help="Initial perturbation amplitude")
     parser.add_argument("--perturbation-decay", type=float, help="Per-iteration perturbation decay factor")
     parser.add_argument(
+        "--gain-floor-fraction",
+        type=float,
+        help="Lower bound for the SPGD gain expressed as a fraction of the stage start value",
+    )
+    parser.add_argument(
+        "--perturbation-floor-fraction",
+        type=float,
+        help="Lower bound for the perturbation amplitude expressed as a fraction of the stage start value",
+    )
+    parser.add_argument(
         "--auto-tune",
         dest="auto_tune",
         action="store_true",
@@ -837,6 +899,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         metric_average=SPGDConfig.metric_average,
         control_min=SPGDConfig.control_limits[0],
         control_max=SPGDConfig.control_limits[1],
+        gain_floor_fraction=SPGDConfig.min_gain_fraction,
+        perturbation_floor_fraction=SPGDConfig.min_perturbation_fraction,
         transfer_frequencies=[5.0, 10.0, 20.0],
         transfer_amplitude=0.01,
         transfer_duration=1.0,
@@ -923,10 +987,20 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         control_limits=(args.control_min, args.control_max),
         num_channels=args.channels,
         auto_stages=auto_stages,
+        min_gain_fraction=args.gain_floor_fraction,
+        min_perturbation_fraction=args.perturbation_floor_fraction,
+        control_period=(
+            2.0 * max(abs(args.control_min), abs(args.control_max)) if use_simulation else None
+        ),
     )
 
     if use_simulation:
-        hardware: LockHardware = SimulatedHardware(num_channels=config.num_channels)
+        max_abs_control = max(abs(config.control_limits[0]), abs(config.control_limits[1]), 1e-9)
+        phase_per_unit = math.pi / max_abs_control
+        hardware: LockHardware = SimulatedHardware(
+            num_channels=config.num_channels,
+            phase_per_unit=phase_per_unit,
+        )
     else:
         hardware = RedPitayaHardware(
             host=args.host,
@@ -1011,12 +1085,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             metric_ax.legend(loc="best")
 
         if args.transfer_frequencies:
-            _LOGGER.info("Measuring closed-loop transfer function")
-            tf_result = controller.measure_transfer_function(
-                args.transfer_frequencies,
-                amplitude=args.transfer_amplitude,
-                duration=args.transfer_duration,
-            )
+            if signal is None:
+                _LOGGER.warning(
+                    "Skipping closed-loop transfer function measurement because SciPy is not available"
+                )
+                tf_result = None
+            else:
+                _LOGGER.info("Measuring closed-loop transfer function")
+                tf_result = controller.measure_transfer_function(
+                    args.transfer_frequencies,
+                    amplitude=args.transfer_amplitude,
+                    duration=args.transfer_duration,
+                )
         else:
             tf_result = None
 
