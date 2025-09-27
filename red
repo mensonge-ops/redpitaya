@@ -49,15 +49,23 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
-import matplotlib
 import numpy as np
-from scipy import signal
-for backend in ("QtAgg", "Qt5Agg", "TkAgg"):
-    try:
-        matplotlib.use(backend)
-        break
-    except Exception:
-        pass
+try:  # Optional dependency: SciPy is only needed for spectral estimation utilities.
+    from scipy import signal
+except ModuleNotFoundError:  # pragma: no cover - depends on optional dependency
+    signal = None  # type: ignore[assignment]
+
+try:  # Optional dependency: matplotlib is only required when plotting is enabled.
+    import matplotlib
+except ModuleNotFoundError:  # pragma: no cover - depends on optional dependency
+    matplotlib = None
+else:  # pragma: no cover - backend selection only runs when matplotlib is available
+    for backend in ("QtAgg", "Qt5Agg", "TkAgg"):
+        try:
+            matplotlib.use(backend)
+            break
+        except Exception:
+            continue
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -529,7 +537,10 @@ class LockingController:
         return self._measure_metric()
 
     # -- main algorithms ---------------------------------------------------
-    def run_lock(self) -> LockingResult:
+    def _run_impl(
+        self,
+        iteration_callback: Optional[Callable[[float, np.ndarray], None]] = None,
+    ) -> LockingResult:
         config = self.config
         control = self._current_control.copy()
         metric_history: List[float] = []
@@ -576,6 +587,9 @@ class LockingController:
                 metric_history.append(nominal_metric)
                 control_history.append(current_command.copy())
 
+                if iteration_callback is not None:
+                    iteration_callback(nominal_metric, current_command.copy())
+
                 if nominal_metric > best_metric:
                     best_metric = nominal_metric
                     best_control = current_command.copy()
@@ -614,6 +628,19 @@ class LockingController:
             stage_boundaries=np.asarray(stage_boundaries, dtype=int),
         )
 
+    def run(
+        self,
+        iteration_callback: Optional[Callable[[float, np.ndarray], None]] = None,
+    ) -> LockingResult:
+        return self._run_impl(iteration_callback=iteration_callback)
+
+    def run_lock(
+        self,
+        iteration_callback: Optional[Callable[[float, np.ndarray], None]] = None,
+    ) -> LockingResult:
+        """Backward compatible wrapper around :meth:`run`."""
+
+        return self._run_impl(iteration_callback=iteration_callback)
     def measure_transfer_function(
         self,
         frequencies: Sequence[float],
@@ -621,6 +648,11 @@ class LockingController:
         duration: float = 1.0,
         drive_vector: Optional[Sequence[float]] = None,
     ) -> TransferFunctionResult:
+        if signal is None:
+            raise RuntimeError(
+                "scipy is required for transfer-function estimation. Install scipy "
+                "or invoke the script with an empty --transfer-frequencies list."
+            )
         if drive_vector is None:
             if self._current_control.size == 1:
                 drive_vector = np.array([1.0], dtype=float)
@@ -702,12 +734,21 @@ class LockingController:
         time_axis = np.arange(samples.size) / fs
         demeaned = samples - np.mean(samples) if samples.size else samples
         if demeaned.size:
+            if signal is None:
+                raise RuntimeError(
+                    "scipy is required for Welch PSD estimation. Install scipy or run "
+                    "with --noise-duration 0 to skip the spectrum measurement."
+                )
             nperseg = min(max(demeaned.size // 8, 8), demeaned.size)
             freq, psd = signal.welch(demeaned, fs=fs, nperseg=nperseg)
         else:
             freq = np.empty(0, dtype=float)
             psd = np.empty(0, dtype=float)
         return NoiseAnalysisResult(time=time_axis, samples=samples, frequency=freq, psd=psd)
+
+
+# Backwards compatibility -----------------------------------------------------
+SPGDController = LockingController
 
 
 # ---------------------------------------------------------------------------
@@ -959,7 +1000,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         _LOGGER.info("Starting SPGD locking with %d iterations", total_iterations)
 
     try:
-        lock_result = controller.run_lock()
+        lock_result = controller.run()
         _LOGGER.info("Lock finished. Final metric: %.6f", lock_result.final_metric)
 
         if metric_ax is not None:
