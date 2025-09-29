@@ -478,8 +478,8 @@ class EnhancedSPGDSimulator:
         self.sim_time = 0.0
         self.iteration = 0
 
-    def step(self):
-        """执行一步模拟 - 修复版"""
+    def _execute_single_step(self, record_state=True):
+        """执行一次控制迭代并可选记录结果"""
         max_attempts = 12
         data = None
 
@@ -498,7 +498,21 @@ class EnhancedSPGDSimulator:
             self._coarse_realign(resolution=120)
             data = self._advance_iteration(record_state=False)
 
-        self._record_state(data['intensity'], data['efficiency'], data['phase_error'], data['estimated_phase'])
+        if record_state:
+            self._record_state(
+                data['intensity'],
+                data['efficiency'],
+                data['phase_error'],
+                data['estimated_phase'],
+            )
+        return data
+
+    def step(self, substeps=1):
+        """执行指定数量的迭代，并返回最后一次的结果"""
+        substeps = max(1, int(substeps))
+        data = None
+        for i in range(substeps):
+            data = self._execute_single_step(record_state=(i == substeps - 1))
         return data
 
     def calculate_noise_spectrum(self):
@@ -508,7 +522,24 @@ class EnhancedSPGDSimulator:
 
         data = np.array(list(self.intensity_buffer_for_noise))
         data = data - np.mean(data)
-        freq, psd = signal.welch(data, fs=1 / self.dt, nperseg=min(256, len(data)))
+        # 根据采样历史推算实际记录间隔
+        if len(self.time_history) < 2:
+            return None, None
+        relevant_times = list(self.time_history)[-len(data):]
+        if len(relevant_times) < 2:
+            return None, None
+        total_span = relevant_times[-1] - relevant_times[0]
+        if total_span <= 0:
+            return None, None
+        effective_dt = total_span / (len(relevant_times) - 1)
+        if effective_dt <= 0:
+            return None, None
+
+        freq, psd = signal.welch(
+            data,
+            fs=1 / effective_dt,
+            nperseg=min(256, len(data)),
+        )
 
         mean_intensity = np.mean(list(self.intensity_buffer_for_noise))
         if mean_intensity > 0:
@@ -538,8 +569,10 @@ class EnhancedSPGDSimulator:
 class EnhancedRealtimeDisplay:
     """增强的实时显示界面"""
 
-    def __init__(self, simulator):
+    def __init__(self, simulator, frame_interval=0.05):
         self.sim = simulator
+        self.frame_interval = frame_interval
+        self.steps_per_frame = max(1, int(round(self.frame_interval / self.sim.dt)))
         self.fig = plt.figure(figsize=(16, 10))
         self.fig.suptitle('SPGD Coherent Combining System - Fixed Version',
                           fontsize=14, fontweight='bold')
@@ -636,7 +669,7 @@ class EnhancedRealtimeDisplay:
 
     def update(self, frame):
         """更新显示"""
-        data = self.sim.step()
+        data = self.sim.step(substeps=self.steps_per_frame)
 
         current_time = time.time()
         fps = 1 / (current_time - self.last_update_time) if self.last_update_time else 0
@@ -765,6 +798,8 @@ class EnhancedRealtimeDisplay:
                 if len(self.fps_counter) > 0:
                     avg_fps = np.mean(list(self.fps_counter))
                     stats_text += f"\nFPS: {avg_fps:.1f}"
+                stats_text += f"\nFrame Δt: {self.frame_interval:.3f}s"
+                stats_text += f"\nSteps/frame: {self.steps_per_frame:d}"
                 self.stats_text.set_text(stats_text)
 
         return [self.line_efficiency, self.line_true_phase, self.line_est_phase,
@@ -781,13 +816,14 @@ def run_enhanced_simulation(duration=60, save_results=False):
     sim = EnhancedSPGDSimulator()
     sim.auto_optimize(duration=3)
 
-    display = EnhancedRealtimeDisplay(sim)
+    frame_interval = 0.05
+    display = EnhancedRealtimeDisplay(sim, frame_interval=frame_interval)
 
     print("\nRunning real-time simulation...")
     print("Close window to stop")
 
     ani = FuncAnimation(display.fig, display.update,
-                        interval=50, blit=False,
+                        interval=int(frame_interval * 1000), blit=False,
                         cache_frame_data=False)
 
     try:
