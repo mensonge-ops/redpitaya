@@ -734,12 +734,20 @@ class EnhancedRealtimeDisplay:
             time_array = np.array(times)
             lower_bound = self.sim.controller.efficiency_threshold
             target_line = self.sim.controller.target_efficiency
-            clipped = [min(target_line, max(lower_bound, float(e))) for e in eff_array]
+            clipped_list = [min(target_line, max(lower_bound, float(e))) for e in eff_array]
+            try:
+                clipped = np.array(clipped_list, dtype=float)
+            except TypeError:  # Simple fallback numpy stub without dtype support
+                clipped = np.array(clipped_list)
+            try:
+                mask = clipped >= lower_bound
+            except TypeError:  # When clipped is a plain list under the stub implementation
+                mask = [value >= lower_bound for value in clipped_list]
             self.fill_efficiency = self.ax_efficiency.fill_between(
                 time_array,
                 lower_bound,
                 clipped,
-                where=(clipped >= lower_bound),
+                where=mask,
                 color='green', alpha=0.2
             )
 
