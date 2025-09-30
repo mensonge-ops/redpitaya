@@ -693,13 +693,31 @@ class RedPitayaSCPIClient:
 
     def wait_acquisition(self, timeout=1.0):
         deadline = time.time() + timeout
+        last_state = ""
         while time.time() < deadline:
-            state = self.query("ACQ:TRIG:STAT?")
-            state = state.upper()
-            if "TD" in state or "TRIGGERED" in state:
+            try:
+                state = self.query("ACQ:TRIG:STAT?")
+            except (TimeoutError, socket.timeout):
+                # Give the FPGA more time to deliver data; keep polling
+                time.sleep(0.01)
+                continue
+            except ConnectionError:
+                raise
+            last_state = (state or "").upper()
+            if "TD" in last_state or "TRIGGERED" in last_state:
                 return True
             time.sleep(0.01)
-        raise TimeoutError("Red Pitaya acquisition timeout")
+        raise TimeoutError(
+            f"Red Pitaya acquisition timeout (last state: {last_state or 'unknown'})"
+        )
+
+    def identify(self):
+        """Return the device identification string for confirmation."""
+        try:
+            response = self.query("*IDN?")
+        except Exception as exc:  # pragma: no cover - network dependent
+            raise ConnectionError(f"Failed to query Red Pitaya identity: {exc}") from exc
+        return response or ""
 
     def acquire_samples(self, source=1, count=16384, timeout=1.0):
         self.prepare_acquisition()
@@ -1237,6 +1255,32 @@ def run_redpitaya_lock(duration=60, host="192.168.10.2", port=5000,
     print("=" * 70)
 
     client = RedPitayaSCPIClient(host=host, port=port)
+
+    print("\nChecking Red Pitaya connection...")
+    try:
+        client.connect()
+        identity = client.identify()
+    except Exception as exc:
+        client.close()
+        raise RuntimeError(f"Failed to verify Red Pitaya connection: {exc}") from exc
+
+    if identity:
+        print(f"Device responded with: {identity}")
+    else:
+        print("Device responded without an identification string.")
+
+    proceed = input("Proceed with locking using this device? [y/N]: ").strip().lower()
+    if proceed not in ("y", "yes"):
+        client.close()
+        print("Locking aborted by user after connection test.")
+        return {
+            'efficiency_history': [],
+            'intensity_history': [],
+            'phase_error_history': [],
+            'time_history': [],
+            'aborted': True,
+        }
+
     hardware = RedPitayaHardwareCombiner(client=client)
     hardware.initialise(frequency=frequency, amplitude=amplitude)
 
