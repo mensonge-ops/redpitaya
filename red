@@ -614,6 +614,11 @@ class RedPitayaSCPIClient:
         self._sock = None
         self._recv_buffer = b""
         self._lock = threading.Lock()
+        self._acq_decimation = 1
+        self._acq_averaging = True
+        self._acq_gain = "HV"
+        self._acq_coupling = "DC"
+        self.sample_rate_hz = 125_000_000.0
 
     def connect(self):
         if self._sock is None:
@@ -676,16 +681,48 @@ class RedPitayaSCPIClient:
             self.write(f"SOUR{channel}:FREQ {frequency}")
             self.write(f"SOUR{channel}:VOLT {amplitude}")
             self.write(f"SOUR{channel}:PHAS 0")
+            self.write(f"SOUR{channel}:VOLT:OFFS 0")
+            self.write(f"SOUR{channel}:BURS:STATE OFF")
+            self.write(f"SOUR{channel}:TRIG:SOURCE INT")
+            self.write(f"OUTPUT{channel}:LOAD INF")
             self.write(f"OUTPUT{channel}:STATE ON")
 
     def set_phase(self, channel, phase_rad):
         phase_deg = (phase_rad * 180.0 / math.pi) % 360.0
         self.write(f"SOUR{channel}:PHAS {phase_deg}")
 
-    def prepare_acquisition(self, decimation=1, averaging=True):
+    def configure_inputs(self, gain="HV", coupling="DC"):
+        self._acq_gain = gain
+        self._acq_coupling = coupling
+        for channel in (1, 2):
+            self.write(f"ACQ:SOUR{channel}:GAIN {gain}")
+            if coupling is not None:
+                try:
+                    self.write(f"ACQ:SOUR{channel}:COUP {coupling}")
+                except Exception:
+                    pass
+
+    def prepare_acquisition(self, decimation=1, averaging=True,
+                             gain=None, coupling=None):
+        self._acq_decimation = decimation
+        self._acq_averaging = averaging
+        if gain is not None:
+            self._acq_gain = gain
+        if coupling is not None:
+            self._acq_coupling = coupling
+
+        self.sample_rate_hz = 125_000_000.0 / max(1, self._acq_decimation)
+
+        self.write("ACQ:STOP")
         self.write("ACQ:RST")
-        self.write(f"ACQ:DEC {decimation}")
-        self.write(f"ACQ:AVG {'ON' if averaging else 'OFF'}")
+        self.write(f"ACQ:DEC {self._acq_decimation}")
+        self.write(f"ACQ:AVG {'ON' if self._acq_averaging else 'OFF'}")
+        self.write("ACQ:DATA:FORMAT ASCII")
+        self.write("ACQ:DATA:UNITS VOLTS")
+        self.write("ACQ:TRIG:LEV 0")
+        self.write("ACQ:TRIG:DLY 0")
+        self.write("ACQ:TRIG:SOURCE NOW")
+        self.configure_inputs(self._acq_gain, self._acq_coupling)
 
     def start_acquisition(self):
         self.write("ACQ:START")
@@ -719,12 +756,31 @@ class RedPitayaSCPIClient:
             raise ConnectionError(f"Failed to query Red Pitaya identity: {exc}") from exc
         return response or ""
 
-    def acquire_samples(self, source=1, count=16384, timeout=1.0):
-        self.prepare_acquisition()
-        self.start_acquisition()
-        self.wait_acquisition(timeout=timeout)
-        raw = self.query(f"ACQ:SOUR{source}:DATA? {count}")
-        return self._parse_samples(raw)
+    def acquire_samples(self, source=1, count=16384, timeout=1.0,
+                        decimation=None, averaging=None, gain=None,
+                        coupling=None):
+        count = max(1, min(16384, int(count)))
+        decimation = self._acq_decimation if decimation is None else decimation
+        averaging = self._acq_averaging if averaging is None else averaging
+
+        self.prepare_acquisition(decimation=decimation, averaging=averaging,
+                                 gain=gain, coupling=coupling)
+        attempts = 3
+        for attempt in range(attempts):
+            self.start_acquisition()
+            try:
+                self.wait_acquisition(timeout=timeout)
+                raw = self.query(f"ACQ:SOUR{source}:DATA? 0,{count - 1}")
+            except TimeoutError:
+                time.sleep(0.02)
+                continue
+            samples = self._parse_samples(raw)
+            if samples:
+                self.write("ACQ:STOP")
+                return samples
+            time.sleep(0.01)
+        self.write("ACQ:STOP")
+        return []
 
     @staticmethod
     def _parse_samples(raw):
@@ -748,7 +804,8 @@ class RedPitayaHardwareCombiner:
 
     def __init__(self, client=None, controller=None, measurement_channel=1,
                  reference_channel=1, control_channel=2, samples_per_measurement=4096,
-                 settle_time=0.002):
+                 settle_time=0.002, decimation=64, averaging=True,
+                 input_gain="HV", input_coupling="DC"):
         self.client = client or RedPitayaSCPIClient()
         self.controller = controller or AdaptiveSPGDController()
         self.measurement_channel = measurement_channel
@@ -756,6 +813,10 @@ class RedPitayaHardwareCombiner:
         self.control_channel = control_channel
         self.samples_per_measurement = samples_per_measurement
         self.settle_time = settle_time
+        self.decimation = decimation
+        self.averaging = averaging
+        self.input_gain = input_gain
+        self.input_coupling = input_coupling
 
         if self.controller.target_efficiency < 98.0:
             self.controller.target_efficiency = 98.0
@@ -771,10 +832,13 @@ class RedPitayaHardwareCombiner:
         self.efficiency_history = deque(maxlen=20000)
         self.intensity_history = deque(maxlen=20000)
         self.phase_error_history = deque(maxlen=20000)
+        self.estimated_phase_history = deque(maxlen=20000)
+        self.noise_buffer = deque(maxlen=32768)
 
         self.dt = 0.0005
         self.iteration = 0
         self.start_time = None
+        self.sample_rate_hz = self.client.sample_rate_hz
 
     def initialise(self, frequency=1e4, amplitude=0.8, scan_points=90):
         print("Connecting to Red Pitaya...")
@@ -782,6 +846,11 @@ class RedPitayaHardwareCombiner:
         self.client.configure_outputs(self.reference_channel, self.control_channel,
                                       frequency=frequency, amplitude=amplitude)
         self.client.set_phase(self.control_channel, self.current_phase)
+        self.client.prepare_acquisition(decimation=self.decimation,
+                                        averaging=self.averaging,
+                                        gain=self.input_gain,
+                                        coupling=self.input_coupling)
+        self.sample_rate_hz = self.client.sample_rate_hz
         self.start_time = time.time()
         self._calibrate(scan_points=scan_points)
 
@@ -820,6 +889,7 @@ class RedPitayaHardwareCombiner:
         self.controller.velocity = 0.0
         self.client.set_phase(self.control_channel, best_phase)
         time.sleep(self.settle_time)
+        self.estimated_phase_history.append(best_phase)
 
         print(f"Calibration complete: max intensity={best_intensity:.3f}, min={min_intensity:.3f}")
 
@@ -829,10 +899,17 @@ class RedPitayaHardwareCombiner:
         return self._measure_intensity()
 
     def _measure_intensity(self):
-        samples = self.client.acquire_samples(source=self.measurement_channel,
-                                              count=self.samples_per_measurement)
+        samples = self.client.acquire_samples(
+            source=self.measurement_channel,
+            count=self.samples_per_measurement,
+            decimation=self.decimation,
+            averaging=self.averaging,
+            gain=self.input_gain,
+            coupling=self.input_coupling,
+        )
         if not samples:
             return self.min_intensity
+        self.noise_buffer.extend(samples)
         squared = [value * value for value in samples]
         return float(np.mean(squared))
 
@@ -859,6 +936,26 @@ class RedPitayaHardwareCombiner:
         baseline_efficiency = self._intensity_to_efficiency(baseline_intensity)
         return gradient, baseline_intensity, baseline_efficiency
 
+    def calculate_noise_spectrum(self):
+        if signal is None or len(self.noise_buffer) < 256 or self.sample_rate_hz <= 0:
+            return None, None
+        try:
+            data = np.array(list(self.noise_buffer))
+        except Exception:
+            return None, None
+        mean_value = np.mean(data)
+        data = data - mean_value
+        nperseg = min(2048, len(data))
+        if nperseg < 32:
+            return None, None
+        freq, psd = signal.welch(data, fs=self.sample_rate_hz, nperseg=nperseg)
+        mean_intensity = np.mean(self.intensity_history) if self.intensity_history else 0.0
+        if mean_intensity > 0:
+            rin = psd / (mean_intensity ** 2)
+        else:
+            rin = psd
+        return freq, rin
+
     def _recover_lock(self):
         print("Attempting recovery scan...")
         best_phase = self.current_phase
@@ -875,6 +972,7 @@ class RedPitayaHardwareCombiner:
         self.controller.velocity = 0.0
         self.client.set_phase(self.control_channel, best_phase)
         time.sleep(self.settle_time)
+        self.estimated_phase_history.append(best_phase)
         return best_efficiency
 
     def step(self):
@@ -915,6 +1013,7 @@ class RedPitayaHardwareCombiner:
         self.intensity_history.append(intensity)
         self.efficiency_history.append(efficiency)
         self.phase_error_history.append(phase_error)
+        self.estimated_phase_history.append(self.current_phase)
 
         data = {
             'time': current_time,
@@ -924,6 +1023,7 @@ class RedPitayaHardwareCombiner:
             'locked': self.controller.locked,
             'perturbation': self.controller.perturbation,
             'gain_scale': self.controller.gain_scale_factor,
+            'emergency': self.controller.emergency_mode,
         }
 
         return data
@@ -941,24 +1041,34 @@ class RedPitayaHardwareCombiner:
                     f"phase={data['phase_error']:.3f} rad | perturb={data['perturbation']:.4f}"
                 )
                 next_report = time.time() + report_interval
+        return self.export_history()
+
+    def export_history(self):
         return {
             'efficiency_history': list(self.efficiency_history),
             'intensity_history': list(self.intensity_history),
             'phase_error_history': list(self.phase_error_history),
+            'estimated_phase_history': list(self.estimated_phase_history),
             'time_history': list(self.time_history),
+            'aborted': False,
         }
 
 
 class EnhancedRealtimeDisplay:
     """增强的实时显示界面"""
 
-    def __init__(self, simulator, frame_interval=0.05):
+    def __init__(self, simulator, frame_interval=0.05, max_duration=None):
         self.sim = simulator
         self.frame_interval = frame_interval
-        self.steps_per_frame = max(1, int(round(self.frame_interval / self.sim.dt)))
+        dt = getattr(self.sim, 'dt', None)
+        if dt is None or dt <= 0:
+            self.steps_per_frame = 1
+        else:
+            self.steps_per_frame = max(1, int(round(self.frame_interval / dt)))
         self.fig = plt.figure(figsize=(16, 10))
         self.fig.suptitle('SPGD Coherent Combining System - Fixed Version',
                           fontsize=14, fontweight='bold')
+        self.max_duration = max_duration
 
         gs = GridSpec(4, 4, figure=self.fig, hspace=0.3, wspace=0.3)
 
@@ -1054,19 +1164,27 @@ class EnhancedRealtimeDisplay:
 
     def update(self, frame):
         """更新显示"""
-        data = self.sim.step(substeps=self.steps_per_frame)
+        data = None
+        if self.steps_per_frame > 1:
+            try:
+                data = self.sim.step(substeps=self.steps_per_frame)
+            except TypeError:
+                for _ in range(self.steps_per_frame):
+                    data = self.sim.step()
+        else:
+            data = self.sim.step()
 
         current_time = time.time()
         fps = 1 / (current_time - self.last_update_time) if self.last_update_time else 0
         self.fps_counter.append(fps)
         self.last_update_time = current_time
 
-        times = list(self.sim.time_history)
-        efficiencies = list(self.sim.efficiency_history)
-        intensities = list(self.sim.intensity_history)
-        true_phases = list(self.sim.true_phase_history)
-        est_phases = list(self.sim.estimated_phase_history)
-        phase_errors = list(self.sim.phase_error_history)
+        times = list(getattr(self.sim, 'time_history', []))
+        efficiencies = list(getattr(self.sim, 'efficiency_history', []))
+        intensities = list(getattr(self.sim, 'intensity_history', []))
+        true_phases = list(getattr(self.sim, 'true_phase_history', []))
+        est_phases = list(getattr(self.sim, 'estimated_phase_history', []))
+        phase_errors = list(getattr(self.sim, 'phase_error_history', []))
 
         if len(times) > 1:
             time_window = 10
@@ -1074,6 +1192,14 @@ class EnhancedRealtimeDisplay:
                 xlim = [times[-1] - time_window, times[-1] + 0.5]
             else:
                 xlim = [0, time_window]
+
+            safe_data = data or {}
+            efficiency_value = safe_data.get('efficiency', efficiencies[-1] if efficiencies else 0.0)
+            phase_error_value = safe_data.get('phase_error', phase_errors[-1] if phase_errors else 0.0)
+            perturbation_value = safe_data.get('perturbation', self.sim.controller.perturbation)
+            gain_scale_value = safe_data.get('gain_scale', self.sim.controller.gain_scale_factor)
+            locked_state = bool(safe_data.get('locked', getattr(self.sim.controller, 'locked', False)))
+            emergency_state = bool(safe_data.get('emergency', getattr(self.sim.controller, 'emergency_mode', False)))
 
             # 更新效率图
             self.line_efficiency.set_data(times, efficiencies)
@@ -1103,9 +1229,23 @@ class EnhancedRealtimeDisplay:
             )
 
             # 更新相位图
-            self.line_true_phase.set_data(times, true_phases)
-            self.line_est_phase.set_data(times, est_phases)
-            self.line_phase_error.set_data(times, phase_errors)
+            if true_phases:
+                n_true = min(len(times), len(true_phases))
+                self.line_true_phase.set_data(times[-n_true:], true_phases[-n_true:])
+            else:
+                self.line_true_phase.set_data([], [])
+
+            if est_phases:
+                n_est = min(len(times), len(est_phases))
+                self.line_est_phase.set_data(times[-n_est:], est_phases[-n_est:])
+            else:
+                self.line_est_phase.set_data([], [])
+
+            if phase_errors:
+                n_err = min(len(times), len(phase_errors))
+                self.line_phase_error.set_data(times[-n_err:], phase_errors[-n_err:])
+            else:
+                self.line_phase_error.set_data([], [])
             self.ax_phase.set_xlim(xlim)
 
             # 更新强度图
@@ -1118,18 +1258,21 @@ class EnhancedRealtimeDisplay:
             self.ax_phasor.set_ylim([0, 1.5])
             self.ax_phasor.arrow(0, 0, 0, 0.5, head_width=0.1, head_length=0.05,
                                  fc='blue', ec='blue', alpha=0.7, label='Beam 1')
-            phase_diff = data['phase_error']
+            phase_diff = phase_error_value
             self.ax_phasor.arrow(phase_diff, 0, 0, 0.5, head_width=0.1, head_length=0.05,
                                  fc='red', ec='red', alpha=0.7, label='Beam 2')
             combined_angle = phase_diff / 2
-            combined_magnitude = np.abs(1 + np.exp(1j * phase_diff))
+            if hasattr(np, 'exp'):
+                combined_magnitude = np.abs(1 + np.exp(1j * phase_diff))
+            else:
+                combined_magnitude = abs(1 + cmath.exp(1j * phase_diff))
             self.ax_phasor.arrow(combined_angle, 0, 0, combined_magnitude / 2,
                                  head_width=0.15, head_length=0.08,
                                  fc='green', ec='green', linewidth=2, label='Combined')
             self.ax_phasor.legend(loc='upper right', fontsize=8)
 
             # 更新噪声谱
-            if frame % 20 == 0:
+            if frame % 20 == 0 and hasattr(self.sim, 'calculate_noise_spectrum'):
                 freq, rin = self.sim.calculate_noise_spectrum()
                 if freq is not None and len(freq) > 1:
                     self.line_noise.set_data(freq[1:], rin[1:])
@@ -1160,30 +1303,30 @@ class EnhancedRealtimeDisplay:
             self.ax_control.clear()
             self.ax_control.axis('off')
             self.ax_control.set_title('Control Parameters', fontsize=10)
-            control_text = f"Perturbation: {data['perturbation']:.4f}\n"
-            control_text += f"Gain Scale: {data['gain_scale']:.2f}\n"
+            control_text = f"Perturbation: {perturbation_value:.4f}\n"
+            control_text += f"Gain Scale: {gain_scale_value:.2f}\n"
             control_text += f"Momentum: {self.sim.controller.momentum:.2f}\n"
             control_text += f"Learning Rate: {self.sim.controller.learning_rate:.3f}"
             self.ax_control.text(0.1, 0.8, control_text, fontsize=9,
                                  verticalalignment='top', fontfamily='monospace')
 
             # 更新状态指示器
-            self.lock_indicator.set_color('green' if data['locked'] else 'red')
+            self.lock_indicator.set_color('green' if locked_state else 'red')
             target_line = self.sim.controller.target_efficiency
             lower_bound = self.sim.controller.efficiency_threshold
-            if data['efficiency'] >= target_line:
+            if efficiency_value >= target_line:
                 self.efficiency_indicator.set_color('green')
-            elif data['efficiency'] >= lower_bound:
+            elif efficiency_value >= lower_bound:
                 self.efficiency_indicator.set_color('yellow')
             else:
                 self.efficiency_indicator.set_color('red')
-            self.emergency_indicator.set_color('red' if data['emergency'] else 'gray')
+            self.emergency_indicator.set_color('red' if emergency_state else 'gray')
 
             # 更新状态文本
             status_text = f"Iteration: {self.sim.iteration:6d}\n"
-            status_text += f"Time: {data['time']:8.1f} s\n"
-            status_text += f"Efficiency: {data['efficiency']:6.2f}%\n"
-            status_text += f"Phase Error: {data['phase_error']:7.4f} rad\n"
+            status_text += f"Time: {safe_data.get('time', times[-1] if times else 0.0):8.1f} s\n"
+            status_text += f"Efficiency: {efficiency_value:6.2f}%\n"
+            status_text += f"Phase Error: {phase_error_value:7.4f} rad\n"
             self.status_text.set_text(status_text)
 
             # 更新统计信息
@@ -1208,6 +1351,10 @@ class EnhancedRealtimeDisplay:
                 stats_text += f"\nFrame Δt: {self.frame_interval:.3f}s"
                 stats_text += f"\nSteps/frame: {self.steps_per_frame:d}"
                 self.stats_text.set_text(stats_text)
+
+        if self.max_duration is not None and times:
+            if times[-1] >= self.max_duration:
+                plt.close(self.fig)
 
         return [self.line_efficiency, self.line_true_phase, self.line_est_phase,
                 self.line_phase_error, self.line_intensity, self.line_noise]
@@ -1247,7 +1394,8 @@ def run_enhanced_simulation(duration=60, save_results=False):
 
 
 def run_redpitaya_lock(duration=60, host="192.168.10.2", port=5000,
-                       frequency=1e4, amplitude=0.8, report_interval=1.0):
+                       frequency=1e4, amplitude=0.8, report_interval=1.0,
+                       frame_interval=0.1):
     """Lock one channel of a Red Pitaya to follow the other using SPGD."""
     print("=" * 70)
     print("Red Pitaya SPGD Locking")
@@ -1284,8 +1432,25 @@ def run_redpitaya_lock(duration=60, host="192.168.10.2", port=5000,
     hardware = RedPitayaHardwareCombiner(client=client)
     hardware.initialise(frequency=frequency, amplitude=amplitude)
 
+    use_display = MATPLOTLIB_AVAILABLE and plt is not None
+
     try:
-        results = hardware.run(duration=duration, report_interval=report_interval)
+        if use_display:
+            print("\nRunning hardware locking with live plots...")
+            print("Close window to stop or wait for the duration to elapse")
+            display = EnhancedRealtimeDisplay(hardware,
+                                              frame_interval=frame_interval,
+                                              max_duration=duration)
+            ani = FuncAnimation(display.fig, display.update,
+                                interval=int(frame_interval * 1000),
+                                blit=False, cache_frame_data=False)
+            try:
+                plt.show()
+            except KeyboardInterrupt:
+                print("\nHardware visualization interrupted by user")
+            results = hardware.export_history()
+        else:
+            results = hardware.run(duration=duration, report_interval=report_interval)
     finally:
         hardware.shutdown()
 
