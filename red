@@ -9,6 +9,9 @@ import math
 import random
 import cmath
 import statistics
+import socket
+import threading
+from contextlib import contextmanager
 try:
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
@@ -114,10 +117,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for minimal environme
             return max(min_value, min(max_value, value))
 
         @staticmethod
-        def linspace(start, stop, num):
+        def linspace(start, stop, num, endpoint=True):
             if num <= 1:
                 return [start]
-            step = (stop - start) / (num - 1)
+            if endpoint:
+                step = (stop - start) / (num - 1)
+                return [start + i * step for i in range(num)]
+            step = (stop - start) / num
             return [start + i * step for i in range(num)]
 
     np = SimpleNumpy()  # type: ignore
@@ -598,6 +604,333 @@ class EnhancedSPGDSimulator:
         return self.controller.estimated_phase
 
 
+class RedPitayaSCPIClient:
+    """Minimal SCPI client for communicating with a Red Pitaya over TCP."""
+
+    def __init__(self, host="192.168.10.2", port=5000, timeout=3.0):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self._sock = None
+        self._recv_buffer = b""
+        self._lock = threading.Lock()
+
+    def connect(self):
+        if self._sock is None:
+            sock = socket.create_connection((self.host, self.port), self.timeout)
+            sock.settimeout(self.timeout)
+            self._sock = sock
+
+    def close(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            finally:
+                self._sock = None
+
+    @contextmanager
+    def session(self):
+        try:
+            self.connect()
+            yield self
+        finally:
+            self.close()
+
+    def write(self, command):
+        self.connect()
+        message = (command.strip() + "\n").encode("ascii")
+        with self._lock:
+            self._sock.sendall(message)
+
+    def query(self, command):
+        self.write(command)
+        return self._readline()
+
+    def _readline(self):
+        newline = b"\n"
+        with self._lock:
+            while True:
+                if newline in self._recv_buffer:
+                    line, self._recv_buffer = self._recv_buffer.split(newline, 1)
+                    return line.decode("ascii", errors="ignore").strip()
+                chunk = self._sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("Lost connection to Red Pitaya")
+                self._recv_buffer += chunk
+
+    def check_error(self):
+        try:
+            return self.query("SYST:ERR?")
+        except Exception:
+            return None
+
+    # --- Convenience helpers -------------------------------------------------
+
+    def configure_outputs(self, reference_channel=1, control_channel=2,
+                           frequency=1e4, amplitude=0.8):
+        self.write("GEN:RST")
+        for channel in (reference_channel, control_channel):
+            self.write(f"SOUR{channel}:FUNC SIN")
+            self.write(f"SOUR{channel}:FREQ {frequency}")
+            self.write(f"SOUR{channel}:VOLT {amplitude}")
+            self.write(f"SOUR{channel}:PHAS 0")
+            self.write(f"OUTPUT{channel}:STATE ON")
+
+    def set_phase(self, channel, phase_rad):
+        phase_deg = (phase_rad * 180.0 / math.pi) % 360.0
+        self.write(f"SOUR{channel}:PHAS {phase_deg}")
+
+    def prepare_acquisition(self, decimation=1, averaging=True):
+        self.write("ACQ:RST")
+        self.write(f"ACQ:DEC {decimation}")
+        self.write(f"ACQ:AVG {'ON' if averaging else 'OFF'}")
+
+    def start_acquisition(self):
+        self.write("ACQ:START")
+        self.write("ACQ:TRIG NOW")
+
+    def wait_acquisition(self, timeout=1.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            state = self.query("ACQ:TRIG:STAT?")
+            state = state.upper()
+            if "TD" in state or "TRIGGERED" in state:
+                return True
+            time.sleep(0.01)
+        raise TimeoutError("Red Pitaya acquisition timeout")
+
+    def acquire_samples(self, source=1, count=16384, timeout=1.0):
+        self.prepare_acquisition()
+        self.start_acquisition()
+        self.wait_acquisition(timeout=timeout)
+        raw = self.query(f"ACQ:SOUR{source}:DATA? {count}")
+        return self._parse_samples(raw)
+
+    @staticmethod
+    def _parse_samples(raw):
+        if not raw:
+            return []
+        data = raw.strip()
+        if data.startswith("{") and data.endswith("}"):
+            data = data[1:-1]
+        parts = [item.strip() for item in data.split(',') if item.strip()]
+        samples = []
+        for item in parts:
+            try:
+                samples.append(float(item))
+            except ValueError:
+                continue
+        return samples
+
+
+class RedPitayaHardwareCombiner:
+    """Use the adaptive controller to lock one Red Pitaya channel to another."""
+
+    def __init__(self, client=None, controller=None, measurement_channel=1,
+                 reference_channel=1, control_channel=2, samples_per_measurement=4096,
+                 settle_time=0.002):
+        self.client = client or RedPitayaSCPIClient()
+        self.controller = controller or AdaptiveSPGDController()
+        self.measurement_channel = measurement_channel
+        self.reference_channel = reference_channel
+        self.control_channel = control_channel
+        self.samples_per_measurement = samples_per_measurement
+        self.settle_time = settle_time
+
+        if self.controller.target_efficiency < 98.0:
+            self.controller.target_efficiency = 98.0
+        if self.controller.efficiency_threshold < 98.0:
+            self.controller.efficiency_threshold = 98.0
+
+        self.max_intensity = 1.0
+        self.min_intensity = 1e-6
+        self.current_phase = random.uniform(-math.pi, math.pi)
+        self.controller.estimated_phase = self.current_phase
+
+        self.time_history = deque(maxlen=20000)
+        self.efficiency_history = deque(maxlen=20000)
+        self.intensity_history = deque(maxlen=20000)
+        self.phase_error_history = deque(maxlen=20000)
+
+        self.dt = 0.0005
+        self.iteration = 0
+        self.start_time = None
+
+    def initialise(self, frequency=1e4, amplitude=0.8, scan_points=90):
+        print("Connecting to Red Pitaya...")
+        self.client.connect()
+        self.client.configure_outputs(self.reference_channel, self.control_channel,
+                                      frequency=frequency, amplitude=amplitude)
+        self.client.set_phase(self.control_channel, self.current_phase)
+        self.start_time = time.time()
+        self._calibrate(scan_points=scan_points)
+
+    def shutdown(self):
+        try:
+            self.client.write(f"OUTPUT{self.reference_channel}:STATE OFF")
+            self.client.write(f"OUTPUT{self.control_channel}:STATE OFF")
+        except Exception:
+            pass
+        self.client.close()
+
+    def _calibrate(self, scan_points=90):
+        print("Scanning phase to calibrate intensity extrema...")
+        phases = np.linspace(-math.pi, math.pi, scan_points, endpoint=False)
+        best_phase = self.current_phase
+        best_intensity = -1.0
+        min_intensity = float("inf")
+
+        for phase in phases:
+            intensity = self._measure_phase_intensity(phase)
+            if intensity > best_intensity:
+                best_intensity = intensity
+                best_phase = phase
+            if intensity < min_intensity:
+                min_intensity = intensity
+
+        if best_intensity <= 0:
+            best_intensity = 1.0
+        if min_intensity <= 0:
+            min_intensity = 1e-6
+
+        self.max_intensity = best_intensity
+        self.min_intensity = min_intensity
+        self.current_phase = best_phase
+        self.controller.estimated_phase = best_phase
+        self.controller.velocity = 0.0
+        self.client.set_phase(self.control_channel, best_phase)
+        time.sleep(self.settle_time)
+
+        print(f"Calibration complete: max intensity={best_intensity:.3f}, min={min_intensity:.3f}")
+
+    def _measure_phase_intensity(self, phase):
+        self.client.set_phase(self.control_channel, phase)
+        time.sleep(self.settle_time)
+        return self._measure_intensity()
+
+    def _measure_intensity(self):
+        samples = self.client.acquire_samples(source=self.measurement_channel,
+                                              count=self.samples_per_measurement)
+        if not samples:
+            return self.min_intensity
+        squared = [value * value for value in samples]
+        return float(np.mean(squared))
+
+    def _intensity_to_efficiency(self, intensity):
+        span = max(self.max_intensity - self.min_intensity, 1e-6)
+        efficiency = (intensity - self.min_intensity) / span
+        efficiency = max(0.0, min(1.0, efficiency))
+        return efficiency * 100.0
+
+    def _measure_gradient(self):
+        perturbation = self.controller.perturbation
+        plus_phase = self.current_phase + perturbation
+        minus_phase = self.current_phase - perturbation
+
+        intensity_plus = self._measure_phase_intensity(plus_phase)
+        intensity_minus = self._measure_phase_intensity(minus_phase)
+
+        # restore current phase
+        self.client.set_phase(self.control_channel, self.current_phase)
+        time.sleep(self.settle_time)
+
+        gradient = (intensity_plus - intensity_minus) / (2 * perturbation)
+        baseline_intensity = self._measure_intensity()
+        baseline_efficiency = self._intensity_to_efficiency(baseline_intensity)
+        return gradient, baseline_intensity, baseline_efficiency
+
+    def _recover_lock(self):
+        print("Attempting recovery scan...")
+        best_phase = self.current_phase
+        best_efficiency = -1.0
+        for phase in np.linspace(-math.pi, math.pi, 180, endpoint=False):
+            intensity = self._measure_phase_intensity(phase)
+            efficiency = self._intensity_to_efficiency(intensity)
+            if efficiency > best_efficiency:
+                best_efficiency = efficiency
+                best_phase = phase
+
+        self.current_phase = best_phase
+        self.controller.estimated_phase = best_phase
+        self.controller.velocity = 0.0
+        self.client.set_phase(self.control_channel, best_phase)
+        time.sleep(self.settle_time)
+        return best_efficiency
+
+    def step(self):
+        self.iteration += 1
+        if self.start_time is None:
+            self.start_time = time.time()
+        current_time = time.time() - self.start_time
+
+        gradient, baseline_intensity, baseline_efficiency = self._measure_gradient()
+        new_phase = self.controller.update(gradient, baseline_efficiency)
+        self.current_phase = new_phase
+        self.client.set_phase(self.control_channel, new_phase)
+        time.sleep(self.settle_time)
+
+        intensity = self._measure_intensity()
+        efficiency = self._intensity_to_efficiency(intensity)
+
+        threshold = self.controller.efficiency_threshold
+        attempts = 0
+        max_attempts = 3
+        while efficiency < threshold and attempts < max_attempts:
+            attempts += 1
+            recovered = self._recover_lock()
+            intensity = self._measure_intensity()
+            efficiency = self._intensity_to_efficiency(intensity)
+            if recovered >= threshold:
+                break
+
+        if efficiency < threshold:
+            warnings.warn(
+                f"Efficiency remained below threshold after recovery attempts: {efficiency:.2f}%",
+                RuntimeWarning,
+            )
+
+        phase_error = self.current_phase  # treat reference as zero phase
+
+        self.time_history.append(current_time)
+        self.intensity_history.append(intensity)
+        self.efficiency_history.append(efficiency)
+        self.phase_error_history.append(phase_error)
+
+        data = {
+            'time': current_time,
+            'intensity': intensity,
+            'efficiency': efficiency,
+            'phase_error': phase_error,
+            'locked': self.controller.locked,
+            'perturbation': self.controller.perturbation,
+            'gain_scale': self.controller.gain_scale_factor,
+        }
+
+        return data
+
+    def run(self, duration=None, report_interval=1.0):
+        print("Starting hardware locking loop...")
+        next_report = time.time() + report_interval
+        end_time = None if duration is None else time.time() + duration
+
+        while end_time is None or time.time() < end_time:
+            data = self.step()
+            if time.time() >= next_report:
+                print(
+                    f"t={data['time']:.1f}s | eff={data['efficiency']:.2f}% | "
+                    f"phase={data['phase_error']:.3f} rad | perturb={data['perturbation']:.4f}"
+                )
+                next_report = time.time() + report_interval
+        return {
+            'efficiency_history': list(self.efficiency_history),
+            'intensity_history': list(self.intensity_history),
+            'phase_error_history': list(self.phase_error_history),
+            'time_history': list(self.time_history),
+        }
+
+
 class EnhancedRealtimeDisplay:
     """增强的实时显示界面"""
 
@@ -895,6 +1228,33 @@ def run_enhanced_simulation(duration=60, save_results=False):
     return sim
 
 
+def run_redpitaya_lock(duration=60, host="192.168.10.2", port=5000,
+                       frequency=1e4, amplitude=0.8, report_interval=1.0):
+    """Lock one channel of a Red Pitaya to follow the other using SPGD."""
+    print("=" * 70)
+    print("Red Pitaya SPGD Locking")
+    print(f"Connecting to {host}:{port}")
+    print("=" * 70)
+
+    client = RedPitayaSCPIClient(host=host, port=port)
+    hardware = RedPitayaHardwareCombiner(client=client)
+    hardware.initialise(frequency=frequency, amplitude=amplitude)
+
+    try:
+        results = hardware.run(duration=duration, report_interval=report_interval)
+    finally:
+        hardware.shutdown()
+
+    if results['efficiency_history']:
+        mean_eff = np.mean(results['efficiency_history'])
+        std_eff = np.std(results['efficiency_history'])
+        print(f"\nHardware run complete. Mean efficiency {mean_eff:.2f}% ± {std_eff:.2f}%")
+    else:
+        print("\nHardware run completed with no recorded samples.")
+
+    return results
+
+
 def print_final_report(sim):
     """打印最终报告"""
     print("\n" + "=" * 70)
@@ -1067,23 +1427,27 @@ def main():
     print("\nSelect mode:")
     print("1. Real-time simulation (recommended)")
     print("2. Quick test (10 seconds)")
-    print("3. Exit")
+    print("3. Red Pitaya hardware lock")
+    print("4. Exit")
 
-    choice = input("\nEnter choice (1-3): ").strip()
+    choice = input("\nEnter choice (1-4): ").strip()
 
     if choice == '1':
-        sim = run_enhanced_simulation(duration=120, save_results=True)
+        run_enhanced_simulation(duration=120, save_results=True)
 
     elif choice == '2':
         quick_test()
 
     elif choice == '3':
+        run_redpitaya_lock(duration=120)
+
+    elif choice == '4':
         print("Exiting...")
         return
 
     else:
         print("Invalid choice, running real-time simulation...")
-        sim = run_enhanced_simulation(duration=120, save_results=True)
+        run_enhanced_simulation(duration=120, save_results=True)
 
     print("\nProgram completed successfully!")
 
