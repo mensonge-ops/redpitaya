@@ -156,7 +156,7 @@ class RedPitayaBackend(BaseBackend):
         host: str,
         n_channels: int,
         rate_hz: float,
-        port: int = 5025,
+        port: int = 5_000,
         timeout: float = 0.5,
     ) -> None:
         super().__init__(n_channels=n_channels, rate_hz=rate_hz)
@@ -771,9 +771,10 @@ class LockingRunner:
 class LauncherConfig:
     mode: str = "simulate"  # "simulate" or "hardware"
     host: Optional[str] = None
+    port: int = 5_000
     channels: int = 2
     rate_hz: float = 5_000.0
-    duration: float = 2.0
+    duration: Optional[float] = 2.0
     voltage_limit: float = 1.0
     horizon: int = 10
     q_weight: float = 2.0
@@ -869,9 +870,12 @@ def gather_inputs() -> LauncherConfig:
     config.mode = _prompt_mode()
     if config.mode == "hardware":
         config.host = _prompt_host()
+        config.port = _prompt_int("请输入端口", config.port, 1, 65_535)
+        config.duration = None
     config.channels = _prompt_int("请输入锁定路数 (1-8)", config.channels, 1, 8)
     config.rate_hz = _prompt_float("锁定速率 (Hz)", config.rate_hz, min_value=5_000.0)
-    config.duration = _prompt_float("运行时长 (秒)", config.duration, min_value=0.1)
+    if config.mode != "hardware":
+        config.duration = _prompt_float("运行时长 (秒)", config.duration, min_value=0.1)
     config.voltage_limit = _prompt_float("电压限制 (V)", config.voltage_limit, min_value=0.1)
     config.plot = _prompt_bool("是否实时显示曲线", config.plot)
     return config
@@ -883,6 +887,7 @@ def build_backend(cfg: LauncherConfig, amplitudes: List[float], phase_per_volt: 
             host=cfg.host or "127.0.0.1",
             n_channels=cfg.channels,
             rate_hz=cfg.rate_hz,
+            port=cfg.port,
         )
     else:
         backend = SimulationBackend(

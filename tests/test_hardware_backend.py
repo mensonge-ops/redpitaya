@@ -53,6 +53,7 @@ def test_redpitaya_backend_cycle(monkeypatch, channels: int) -> None:
 
     def fake_create_connection(address, timeout=None):
         assert address[0] == "127.0.0.1"
+        assert address[1] == 5_000
         return fake_socket
 
     monkeypatch.setattr("socket.create_connection", fake_create_connection)
