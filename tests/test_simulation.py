@@ -75,6 +75,9 @@ def test_simulation_reaches_target_efficiency():
     summary = runner.summary()
     assert summary["efficiency_mean"] >= 0.95
     assert summary["intensity_noise"] <= 0.015
+    assert "rin_peak_db" in summary
+    assert "rin_peak_freq_hz" in summary
+    assert summary["rin_peak_freq_hz"] >= 0
 
 
 class SpikySimulationBackend(SimulationBackend):
@@ -151,3 +154,6 @@ def test_smoothing_and_outlier_rejection_limits_spikes():
     summary = runner.summary()
     assert summary["efficiency_mean"] >= 0.93
     assert summary["intensity_noise"] <= 0.02
+    assert "rin_peak_db" in summary
+    assert "rin_peak_freq_hz" in summary
+    assert summary["rin_peak_freq_hz"] >= 0

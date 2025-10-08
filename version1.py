@@ -18,13 +18,58 @@ try:  # Optional dependency for live visualization
 except Exception:  # pragma: no cover - matplotlib may be unavailable
     plt = None  # type: ignore
 
-MDT694B_GAIN = 20.0  # Typical voltage gain of the MDT694B piezo driver
+MDT694B_GAIN = 15.0  # MDT694B provides approx. 0-150 V output for 0-10 V input
 
 
 def _wrap_pi(value: float) -> float:
     """Wrap a phase angle to [-pi, pi)."""
 
     return (value + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def compute_rin_spectrum(samples: Iterable[float], sample_rate: float) -> Tuple[List[float], List[float]]:
+    """Compute single-sideband RIN spectrum in dBc/Hz for the provided samples."""
+
+    data = [float(value) for value in samples]
+    n = len(data)
+    if n < 2 or sample_rate <= 0.0:
+        return [], []
+    mean_value = sum(data) / n
+    if mean_value <= 0.0:
+        return [], []
+    fractional = [(value - mean_value) / mean_value for value in data]
+    if n == 1:
+        return [], []
+    window: List[float] = []
+    for idx in range(n):
+        if n == 1:
+            window.append(1.0)
+        else:
+            window.append(0.5 - 0.5 * math.cos(2.0 * math.pi * idx / (n - 1)))
+    window_norm = sum(w * w for w in window) / n
+    if window_norm <= 0.0:
+        return [], []
+    windowed = [fractional[idx] * window[idx] for idx in range(n)]
+    freqs: List[float] = []
+    rin_db: List[float] = []
+    half = n // 2
+    bins = half + 1
+    for k in range(bins):
+        angle = 2.0 * math.pi * k / n
+        real = 0.0
+        imag = 0.0
+        for m, value in enumerate(windowed):
+            phase = angle * m
+            real += value * math.cos(phase)
+            imag -= value * math.sin(phase)
+        psd = (real * real + imag * imag) / (n * n * window_norm)
+        if 0 < k < half:
+            psd *= 2.0
+        freq = k * sample_rate / n
+        rin_value = 10.0 * math.log10(psd + 1e-30)
+        freqs.append(freq)
+        rin_db.append(rin_value)
+    return freqs, rin_db
 
 
 @dataclass
@@ -76,6 +121,10 @@ class BaseBackend:
         intensity_noise = std_intensity / mean_intensity if mean_intensity else 0.0
 
         efficiency = intensity / self._max_intensity if self._max_intensity else 0.0
+        if efficiency < 0.0:
+            efficiency = 0.0
+        if efficiency > 1.0:
+            efficiency = 1.0
         self._eff_history.append(efficiency)
         if len(self._eff_history) > int(self.rate_hz):
             self._eff_history.pop(0)
@@ -420,6 +469,8 @@ class PlotConfig:
     decimation: int = 20
     history: int = 2000
     show_amplified_voltage: bool = True
+    sample_rate: float = 5_000.0
+    rin_window: float = 0.1
 
 
 class LivePlot:
@@ -433,7 +484,6 @@ class LivePlot:
         self.timestamps: Deque[float] = deque(maxlen=config.history)
         self.eff_history: Deque[float] = deque(maxlen=config.history)
         self.int_history: Deque[float] = deque(maxlen=config.history)
-        self.noise_history: Deque[float] = deque(maxlen=config.history)
         self.out1_history: Deque[float] = deque(maxlen=config.history)
         self.out2_history: Deque[float] = deque(maxlen=config.history)
         self.out1_amp_history: Deque[float] = deque(maxlen=config.history)
@@ -441,7 +491,11 @@ class LivePlot:
         self._counter = 0
         self._figure = None
         self._axes: Optional[List] = None
-        self._lines: List = []
+        self._line_eff = None
+        self._line_rin = None
+        self._line_out1 = None
+        self._line_out2 = None
+        self._line_amp = None
         self._text_out1 = None
         self._text_out2 = None
         self._text_amp = None
@@ -450,24 +504,30 @@ class LivePlot:
         if self._figure is not None:
             return
         plt.ion()
-        self._figure, axs = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+        self._figure, axs = plt.subplots(3, 1, figsize=(10, 8))
         axs[0].set_ylabel("Efficiency [%]")
         axs[0].set_ylim(80, 102)
         axs[0].grid(True, alpha=0.3)
-        axs[1].set_ylabel("Intensity noise [% rms]")
+        axs[1].set_ylabel("RIN [dBc/Hz]")
+        axs[1].set_xlabel("Frequency [Hz]")
         axs[1].grid(True, alpha=0.3)
+        axs[1].set_xlim(0, self.config.sample_rate / 2.0)
+        axs[1].set_ylim(-140, -60)
         axs[2].set_ylabel("Voltages [V]")
         axs[2].set_xlabel("Samples / decimated")
         axs[2].grid(True, alpha=0.3)
         self._axes = list(axs)
         (eff_line,) = axs[0].plot([], [], label="Efficiency")
-        (noise_line,) = axs[1].plot([], [], label="Intensity noise")
+        (rin_line,) = axs[1].plot([], [], label="RIN")
         (out1_line,) = axs[2].plot([], [], label="Out1")
         (out2_line,) = axs[2].plot([], [], label="Out2")
-        lines = [eff_line, noise_line, out1_line, out2_line]
         if self.config.show_amplified_voltage:
             (amp_line,) = axs[2].plot([], [], label="MDT694B Out1")
-            lines.append(amp_line)
+            self._line_amp = amp_line
+        self._line_eff = eff_line
+        self._line_rin = rin_line
+        self._line_out1 = out1_line
+        self._line_out2 = out2_line
         self._text_out1 = axs[2].text(
             0.02,
             0.95,
@@ -499,9 +559,9 @@ class LivePlot:
                 fontsize=10,
                 color="tab:green",
             )
-        self._lines = lines
-        for ax in axs:
-            ax.legend(loc="upper right")
+        axs[0].legend(loc="upper right")
+        axs[1].legend(loc="upper right")
+        axs[2].legend(loc="upper right")
 
     def update(self, state: BackendState) -> None:
         if self._counter % self.config.decimation != 0:
@@ -512,29 +572,51 @@ class LivePlot:
         self.timestamps.append(state.timestamp)
         self.eff_history.append(state.efficiency * 100)
         self.int_history.append(state.int1)
-        self.noise_history.append(state.intensity_noise * 100)
         self.out1_history.append(state.out1)
         self.out2_history.append(state.out2)
         self.out1_amp_history.append(state.out1 * MDT694B_GAIN)
         for idx, value in enumerate(state.channel_voltages):
             self.channel_histories[idx].append(value)
 
-        eff_line, noise_line, out1_line, out2_line, *rest = self._lines
-        eff_line.set_data(range(len(self.eff_history)), list(self.eff_history))
-        noise_line.set_data(range(len(self.noise_history)), list(self.noise_history))
-        out1_line.set_data(range(len(self.out1_history)), list(self.out1_history))
-        out2_line.set_data(range(len(self.out2_history)), list(self.out2_history))
-        if rest:
-            rest[0].set_data(range(len(self.out1_amp_history)), list(self.out1_amp_history))
+        if self._line_eff is not None:
+            self._line_eff.set_data(range(len(self.eff_history)), list(self.eff_history))
+        if self._line_rin is not None:
+            window = max(int(self.config.rin_window * self.config.sample_rate), 2)
+            if len(self.int_history) >= window:
+                samples = list(self.int_history)[-window:]
+                freqs, rin = compute_rin_spectrum(samples, self.config.sample_rate)
+                self._line_rin.set_data(freqs, rin)
+                if rin and self._axes is not None:
+                    ymin = min(rin)
+                    ymax = max(rin)
+                    if math.isfinite(ymin) and math.isfinite(ymax):
+                        if ymin == ymax:
+                            ymin -= 1.0
+                            ymax += 1.0
+                        margin = max((ymax - ymin) * 0.1, 1.0)
+                        self._axes[1].set_ylim(ymin - margin, ymax + margin)
+                if self._axes is not None:
+                    self._axes[1].set_xlim(0, self.config.sample_rate / 2.0)
+            else:
+                self._line_rin.set_data([], [])
+        if self._line_out1 is not None:
+            self._line_out1.set_data(range(len(self.out1_history)), list(self.out1_history))
+        if self._line_out2 is not None:
+            self._line_out2.set_data(range(len(self.out2_history)), list(self.out2_history))
+        if self._line_amp is not None:
+            self._line_amp.set_data(range(len(self.out1_amp_history)), list(self.out1_amp_history))
         if self._text_out1 is not None:
             self._text_out1.set_text(f"Out1: {state.out1:0.3f} V")
         if self._text_out2 is not None:
             self._text_out2.set_text(f"Out2: {state.out2:0.3f} V")
         if self._text_amp is not None:
             self._text_amp.set_text(f"MDT694B Out1: {state.out1 * MDT694B_GAIN:0.3f} V")
-        for ax in self._axes or []:
-            ax.relim()
-            ax.autoscale_view()
+        if self._axes is not None:
+            for idx, ax in enumerate(self._axes):
+                if idx == 1:
+                    continue
+                ax.relim()
+                ax.autoscale_view()
         self._figure.canvas.draw()
         self._figure.canvas.flush_events()
 
@@ -553,6 +635,7 @@ class RunnerConfig:
     rate_hz: float = 5_000.0
     enable_console_log: bool = True
     measurement_smoothing: float = 0.0
+    rin_window: float = 0.1
 
 
 @dataclass
@@ -563,6 +646,16 @@ class RunnerHistory:
     noises: List[float] = field(default_factory=list)
     out1: List[float] = field(default_factory=list)
     out2: List[float] = field(default_factory=list)
+
+    def rin_spectrum(self, rate_hz: float, window: float) -> Tuple[List[float], List[float]]:
+        window_samples = max(int(window * rate_hz), 2)
+        if len(self.intensities) < 2:
+            return [], []
+        if len(self.intensities) < window_samples:
+            samples = self.intensities
+        else:
+            samples = self.intensities[-window_samples:]
+        return compute_rin_spectrum(samples, rate_hz)
 
 
 class LockingRunner:
@@ -595,11 +688,18 @@ class LockingRunner:
         self.history.out1.append(state.out1)
         self.history.out2.append(state.out2)
         if self.config.enable_console_log and self._iteration % self.config.log_interval == 0:
+            rin_info = ""
+            freqs, rin = self.history.rin_spectrum(self.config.rate_hz, self.config.rin_window)
+            if freqs and rin:
+                peak_idx = max(range(len(rin)), key=lambda idx: rin[idx])
+                peak_freq = freqs[peak_idx]
+                peak_rin = rin[peak_idx]
+                rin_info = f", RIN_peak={peak_rin:6.1f} dBc/Hz@{peak_freq:6.0f} Hz"
             print(
                 f"[{self.history.timestamps[-1]:7.3f}s] Int1={state.int1:8.4f} V, "
                 f"Out1={state.out1:7.3f} V, Out2={state.out2:7.3f} V, "
-                f"Eff={state.efficiency*100:6.2f} %, Noise={state.intensity_noise*100:5.2f} %, "
-                f"σ_eff={state.efficiency_std*100:5.2f} %",
+                f"Eff={state.efficiency*100:6.2f} %, σ_eff={state.efficiency_std*100:5.2f} %"
+                f"{rin_info}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -659,6 +759,11 @@ class LockingRunner:
         }
         summary["meets_efficiency"] = eff_mean >= self.config.efficiency_target
         summary["meets_noise"] = noise_mean <= self.config.efficiency_std_target
+        freqs, rin = self.history.rin_spectrum(self.config.rate_hz, self.config.rin_window)
+        if freqs and rin:
+            peak_idx = max(range(len(rin)), key=lambda idx: rin[idx])
+            summary["rin_peak_db"] = float(rin[peak_idx])
+            summary["rin_peak_freq_hz"] = float(freqs[peak_idx])
         return summary
 
 
@@ -669,7 +774,7 @@ class LauncherConfig:
     channels: int = 2
     rate_hz: float = 5_000.0
     duration: float = 2.0
-    voltage_limit: float = 1.5
+    voltage_limit: float = 1.0
     horizon: int = 10
     q_weight: float = 2.0
     r_weight: float = 0.1
@@ -686,6 +791,7 @@ class LauncherConfig:
     integral_limit: float = 0.5
     innovation_clip_sigma: float = 3.0
     hardware_measurement_smoothing: float = 0.2
+    rin_window: float = 0.1
 
 
 PROMPT_HEADER = "=" * 64
@@ -798,6 +904,8 @@ def build_plotter(cfg: LauncherConfig, n_channels: int) -> Optional[LivePlot]:
         decimation=cfg.decimation,
         history=cfg.plot_history,
         show_amplified_voltage=True,
+        sample_rate=cfg.rate_hz,
+        rin_window=cfg.rin_window,
     )
     return LivePlot(config=plot_cfg, n_channels=n_channels)
 
@@ -827,6 +935,12 @@ def run_with_config(cfg: LauncherConfig) -> None:
         backend.configure()
         backend.set_max_intensity(sum(amplitudes) ** 2)
 
+        if cfg.mode == "hardware" and cfg.voltage_limit > 1.0:
+            print(
+                "根据 Red Pitaya 125-14 手册，快速模拟输出幅度约为 ±1 V，"
+                "已自动将电压限制调整为 1.0 V。"
+            )
+            cfg.voltage_limit = 1.0
         controller = MPCController(
             MPCConfig(
                 n_channels=cfg.channels,
@@ -872,6 +986,7 @@ def run_with_config(cfg: LauncherConfig) -> None:
             rate_hz=cfg.rate_hz,
             enable_console_log=True,
             measurement_smoothing=smoothing,
+            rin_window=cfg.rin_window,
         )
         runner = LockingRunner(backend, controller, estimator, runner_config, plotter)
         runner_started = True
@@ -883,13 +998,16 @@ def run_with_config(cfg: LauncherConfig) -> None:
         if summary:
             eff = summary["efficiency_mean"] * 100
             eff_std = summary["efficiency_std"] * 100
-            intensity_noise = summary["intensity_noise"] * 100
             print(
                 "\n锁定完成:",
                 f"平均合成效率 {eff:.2f}%",
                 f"效率标准差 {eff_std:.2f}%",
-                f"强度噪声 {intensity_noise:.2f}%",
             )
+            if "rin_peak_db" in summary and "rin_peak_freq_hz" in summary:
+                print(
+                    f"强度噪声峰值 {summary['rin_peak_db']:.2f} dBc/Hz @ "
+                    f"{summary['rin_peak_freq_hz']:.0f} Hz (0.1 s)",
+                )
     finally:
         if not runner_started:
             backend.close()
