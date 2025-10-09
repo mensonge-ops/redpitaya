@@ -49,7 +49,7 @@ class FakeSocket:
 
 @pytest.mark.parametrize("channels", [2, 4])
 def test_redpitaya_backend_cycle(monkeypatch, channels: int) -> None:
-    fake_socket = FakeSocket([b"RP,MODEL\n", b"0.125\n"])
+    fake_socket = FakeSocket([b"RP,MODEL\n", b"TD\n", b"0.125\n"])
 
     def fake_create_connection(address, timeout=None):
         assert address[0] == "127.0.0.1"
@@ -80,3 +80,4 @@ def test_redpitaya_backend_cycle(monkeypatch, channels: int) -> None:
     assert "SOUR1:ENABLE 0" in fake_socket.sent
     assert "SOUR2:ENABLE 0" in fake_socket.sent
     assert "*IDN?" in fake_socket.sent
+    assert "ACQ:TRIG:STAT?" in fake_socket.sent

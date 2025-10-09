@@ -196,9 +196,12 @@ class RedPitayaBackend(BaseBackend):
                 if not chunk:
                     break
                 chunks.append(chunk)
-                if chunk.endswith(b"\n"):
+                if b"\n" in chunk or len(chunk) < 4096:
                     break
         except OSError as exc:  # pragma: no cover - depends on environment
+            buffered = b"".join(chunks).decode().strip()
+            if buffered:
+                return buffered
             self.close()
             raise ConnectionError(
                 f"接收 Red Pitaya 返回数据失败 ({self.host}:{self.port})：{exc}"
@@ -238,7 +241,16 @@ class RedPitayaBackend(BaseBackend):
     def read_int1(self) -> float:
         self._send("ACQ:START")
         self._send("ACQ:TRIG NOW")
-        time.sleep(1.0 / self.rate_hz)
+        wait_deadline = time.monotonic() + max(self.timeout, 0.5)
+        while True:
+            status = self._query("ACQ:TRIG:STAT?").strip().upper()
+            if status in {"TD", "STOP", "TRIG'D"}:
+                break
+            if time.monotonic() > wait_deadline:
+                raise ConnectionError(
+                    f"等待 Red Pitaya 触发完成超时 ({self.host}:{self.port})，当前状态：{status!r}"
+                )
+            time.sleep(min(0.001, max(1.0 / (10.0 * self.rate_hz), 0.0001)))
         response = self._query("ACQ:SOUR1:VALUE?")
         try:
             return float(response)
