@@ -49,7 +49,9 @@ class FakeSocket:
 
 @pytest.mark.parametrize("channels", [2, 4])
 def test_redpitaya_backend_cycle(monkeypatch, channels: int) -> None:
-    fake_socket = FakeSocket([b"RP,MODEL\n", b"TD\n", b"0.125\n"])
+    fake_socket = FakeSocket(
+        [b"RP,MODEL\n", b"TD\n", b"STOP\n", b"TD\n", b"0.125\n"]
+    )
 
     def fake_create_connection(address, timeout=None):
         assert address[0] == "127.0.0.1"

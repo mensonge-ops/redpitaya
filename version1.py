@@ -213,6 +213,16 @@ class RedPitayaBackend(BaseBackend):
             )
         return response
 
+    @staticmethod
+    def _extract_first_float(response: str) -> Optional[float]:
+        cleaned = response.replace(",", " ").replace(";", " ")
+        for token in cleaned.split():
+            try:
+                return float(token)
+            except ValueError:
+                continue
+        return None
+
     def check_connection(self) -> str:
         """Query the device ID to ensure the SCPI socket is responsive."""
 
@@ -242,20 +252,30 @@ class RedPitayaBackend(BaseBackend):
         self._send("ACQ:START")
         self._send("ACQ:TRIG NOW")
         wait_deadline = time.monotonic() + max(self.timeout, 0.5)
+        ready_states = {"STOP"}
+        transient_states = {"TD", "TRIG'D"}
         while True:
             status = self._query("ACQ:TRIG:STAT?").strip().upper()
-            if status in {"TD", "STOP", "TRIG'D"}:
+            if status in ready_states:
                 break
             if time.monotonic() > wait_deadline:
                 raise ConnectionError(
                     f"等待 Red Pitaya 触发完成超时 ({self.host}:{self.port})，当前状态：{status!r}"
                 )
             time.sleep(min(0.001, max(1.0 / (10.0 * self.rate_hz), 0.0001)))
-        response = self._query("ACQ:SOUR1:VALUE?")
-        try:
-            return float(response)
-        except ValueError as exc:  # pragma: no cover - depends on hardware
-            raise RuntimeError(f"Unexpected response from Red Pitaya: {response!r}") from exc
+        last_response = ""
+        for attempt in range(5):
+            response = self._query("ACQ:SOUR1:VALUE?")
+            last_response = response
+            numeric = self._extract_first_float(response)
+            if numeric is not None:
+                return numeric
+            status = response.strip().upper()
+            if status in ready_states or status in transient_states:
+                time.sleep(min(0.001, max(1.0 / (10.0 * self.rate_hz), 0.0001)))
+                continue
+            break
+        raise RuntimeError(f"Unexpected response from Red Pitaya: {last_response!r}")
 
     def apply_control(self, channel_voltages: List[float]) -> Tuple[float, float]:
         if len(channel_voltages) != self.n_channels:
