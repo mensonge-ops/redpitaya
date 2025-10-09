@@ -275,8 +275,13 @@ class RedPitayaBackend(BaseBackend):
         self._send("ACQ:START")
         self._send("ACQ:TRIG NOW")
         wait_deadline = time.monotonic() + max(self.timeout, 0.5)
-        ready_states = {"STOP"}
-        transient_states = {"TD", "TRIG'D"}
+        # Red Pitaya may report "TD" (trigger delayed) indefinitely even though
+        # the acquisition data is already ready. Treat both STOP and TD as
+        # acceptable end states so the loop does not hang on hardware that
+        # never transitions to STOP. "TRIG'D" still indicates the trigger
+        # occurred but data may not be ready yet, so it remains transient.
+        ready_states = {"STOP", "TD"}
+        transient_states = {"TRIG'D"}
         poll_delay = min(0.001, max(1.0 / (10.0 * max(self.rate_hz, 1.0)), 0.0001))
         status = ""
         while True:

@@ -54,7 +54,6 @@ def test_redpitaya_backend_cycle(monkeypatch, channels: int) -> None:
             b"RP,MODEL\n",
             b"",  # trigger status first attempt returns empty
             b"TD\n",
-            b"STOP\n",
             b"",  # value query first attempt empty
             b"TD\n",
             b"0.125\n",
