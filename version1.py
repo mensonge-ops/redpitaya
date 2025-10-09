@@ -157,7 +157,7 @@ class RedPitayaBackend(BaseBackend):
         n_channels: int,
         rate_hz: float,
         port: int = 5_000,
-        timeout: float = 0.5,
+        timeout: float = 5.0,
     ) -> None:
         super().__init__(n_channels=n_channels, rate_hz=rate_hz)
         self.host = host
@@ -167,26 +167,48 @@ class RedPitayaBackend(BaseBackend):
 
     def _ensure_socket(self) -> socket.socket:
         if self.sock is None:
-            self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
+            try:
+                self.sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
+            except OSError as exc:  # pragma: no cover - network errors are environment specific
+                raise ConnectionError(
+                    f"无法连接到 Red Pitaya ({self.host}:{self.port})：{exc}"
+                ) from exc
             self.sock.settimeout(self.timeout)
         return self.sock
 
     def _send(self, command: str) -> None:
         sock = self._ensure_socket()
-        sock.sendall(f"{command}\n".encode())
+        try:
+            sock.sendall(f"{command}\r\n".encode())
+        except OSError as exc:  # pragma: no cover - depends on environment
+            self.close()
+            raise ConnectionError(
+                f"向 Red Pitaya 发送指令失败 ({self.host}:{self.port})：{exc}"
+            ) from exc
 
     def _query(self, command: str) -> str:
         sock = self._ensure_socket()
         self._send(command)
         chunks: List[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            if chunk.endswith(b"\n"):
-                break
-        return b"".join(chunks).decode().strip()
+        try:
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if chunk.endswith(b"\n"):
+                    break
+        except OSError as exc:  # pragma: no cover - depends on environment
+            self.close()
+            raise ConnectionError(
+                f"接收 Red Pitaya 返回数据失败 ({self.host}:{self.port})：{exc}"
+            ) from exc
+        response = b"".join(chunks).decode().strip()
+        if not response:
+            raise ConnectionError(
+                f"未能从 Red Pitaya ({self.host}:{self.port}) 收到有效响应。"
+            )
+        return response
 
     def check_connection(self) -> str:
         """Query the device ID to ensure the SCPI socket is responsive."""
@@ -238,10 +260,16 @@ class RedPitayaBackend(BaseBackend):
     def close(self) -> None:
         if self.sock is not None:
             try:
-                self._send("SOUR1:ENABLE 0")
-                self._send("SOUR2:ENABLE 0")
+                try:
+                    self._send("SOUR1:ENABLE 0")
+                    self._send("SOUR2:ENABLE 0")
+                except ConnectionError:
+                    pass
             finally:
-                self.sock.close()
+                try:
+                    self.sock.close()
+                except OSError:  # pragma: no cover - socket close failure is benign
+                    pass
                 self.sock = None
 
 
