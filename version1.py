@@ -186,32 +186,55 @@ class RedPitayaBackend(BaseBackend):
                 f"向 Red Pitaya 发送指令失败 ({self.host}:{self.port})：{exc}"
             ) from exc
 
-    def _query(self, command: str) -> str:
-        sock = self._ensure_socket()
-        self._send(command)
-        chunks: List[bytes] = []
-        try:
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                if b"\n" in chunk or len(chunk) < 4096:
-                    break
-        except OSError as exc:  # pragma: no cover - depends on environment
-            buffered = b"".join(chunks).decode().strip()
-            if buffered:
-                return buffered
-            self.close()
-            raise ConnectionError(
-                f"接收 Red Pitaya 返回数据失败 ({self.host}:{self.port})：{exc}"
-            ) from exc
-        response = b"".join(chunks).decode().strip()
-        if not response:
-            raise ConnectionError(
+    def _query(
+        self,
+        command: str,
+        *,
+        allow_empty_retry: bool = False,
+        retries: int = 3,
+    ) -> str:
+        attempts = max(int(retries), 1)
+        retry_delay = min(0.005, max(1.0 / (10.0 * max(self.rate_hz, 1.0)), 0.0001))
+        last_error: Optional[ConnectionError] = None
+        for attempt in range(attempts):
+            sock = self._ensure_socket()
+            self._send(command)
+            chunks: List[bytes] = []
+            try:
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if b"\n" in chunk or len(chunk) < 4096:
+                        break
+            except OSError as exc:  # pragma: no cover - depends on environment
+                buffered = b"".join(chunks).decode().strip()
+                if buffered:
+                    return buffered
+                self.close()
+                last_error = ConnectionError(
+                    f"接收 Red Pitaya 返回数据失败 ({self.host}:{self.port})：{exc}"
+                )
+                if allow_empty_retry and attempt < attempts - 1:
+                    time.sleep(retry_delay)
+                    continue
+                raise last_error from exc
+            response = b"".join(chunks).decode().strip()
+            if response:
+                return response
+            last_error = ConnectionError(
                 f"未能从 Red Pitaya ({self.host}:{self.port}) 收到有效响应。"
             )
-        return response
+            if allow_empty_retry and attempt < attempts - 1:
+                time.sleep(retry_delay)
+                continue
+            raise last_error
+        if last_error is not None:
+            raise last_error
+        raise ConnectionError(
+            f"未能从 Red Pitaya ({self.host}:{self.port}) 收到有效响应。"
+        )
 
     @staticmethod
     def _extract_first_float(response: str) -> Optional[float]:
@@ -254,25 +277,53 @@ class RedPitayaBackend(BaseBackend):
         wait_deadline = time.monotonic() + max(self.timeout, 0.5)
         ready_states = {"STOP"}
         transient_states = {"TD", "TRIG'D"}
+        poll_delay = min(0.001, max(1.0 / (10.0 * max(self.rate_hz, 1.0)), 0.0001))
+        status = ""
         while True:
-            status = self._query("ACQ:TRIG:STAT?").strip().upper()
+            try:
+                status = (
+                    self._query(
+                        "ACQ:TRIG:STAT?",
+                        allow_empty_retry=True,
+                        retries=3,
+                    )
+                    .strip()
+                    .upper()
+                )
+            except ConnectionError:
+                if time.monotonic() > wait_deadline:
+                    raise ConnectionError(
+                        f"等待 Red Pitaya 触发完成超时 ({self.host}:{self.port})，当前状态：{status!r}"
+                    )
+                time.sleep(poll_delay)
+                continue
             if status in ready_states:
                 break
             if time.monotonic() > wait_deadline:
                 raise ConnectionError(
                     f"等待 Red Pitaya 触发完成超时 ({self.host}:{self.port})，当前状态：{status!r}"
                 )
-            time.sleep(min(0.001, max(1.0 / (10.0 * self.rate_hz), 0.0001)))
+            time.sleep(poll_delay)
         last_response = ""
         for attempt in range(5):
-            response = self._query("ACQ:SOUR1:VALUE?")
+            try:
+                response = self._query(
+                    "ACQ:SOUR1:VALUE?",
+                    allow_empty_retry=True,
+                    retries=3,
+                )
+            except ConnectionError:
+                if attempt < 4:
+                    time.sleep(poll_delay)
+                    continue
+                raise
             last_response = response
             numeric = self._extract_first_float(response)
             if numeric is not None:
                 return numeric
             status = response.strip().upper()
             if status in ready_states or status in transient_states:
-                time.sleep(min(0.001, max(1.0 / (10.0 * self.rate_hz), 0.0001)))
+                time.sleep(poll_delay)
                 continue
             break
         raise RuntimeError(f"Unexpected response from Red Pitaya: {last_response!r}")
