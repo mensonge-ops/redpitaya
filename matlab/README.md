@@ -44,12 +44,41 @@ Important optional parameters include:
 * `MeasurementSmoothFactor` – exponential smoothing factor (0–1) used to
   average the detector readings that drive the controller; set to 0 to disable
   smoothing.
+* `LockedMeasurementSmoothFactor` – stronger smoothing factor (0–1) that is
+  automatically engaged once the loop is locked to suppress jitter in the
+  efficiency trace.
 * `GradientSmoothFactor` – smoothing factor (0–1) applied to the estimated
   gradient to tame stochastic fluctuations.
+* `EfficiencySmoothFactor` – smoothing factor (0–1) applied to the displayed
+  efficiency trace so the plotted curve reflects the low-variance locked
+  performance.
 * `MinPerturbationRatio` / `MinGainRatio` – floors that limit how much the SPGD
   dither amplitude and gain shrink when efficiency exceeds the threshold.  This
   adaptive scaling keeps the lock tight while preventing excessive dithering
   once the optimum has been located.
+* `LockGuardMinEfficiency` – efficiency level that marks the loop as “locked”.
+  Once the smoothed detector power exceeds this level the script tracks the
+  corresponding actuator point as the golden reference.
+* `LockGuardDrop` – maximum fractional drop from the best locked intensity that
+  is tolerated.  If the efficiency falls by more than this amount the controller
+  automatically re-applies the golden actuator command.
+* `LockGuardFreezeIterations` – number of iterations spent without new gradient
+  updates after a guard-triggered recovery.  This lets the plant settle at the
+  restored optimum before further dithering resumes.
+* `LockGuardPerturbationRatio` – ceiling on the perturbation ratio while the
+  guard is active, reducing dither amplitude after a recovery.
+* `LockGuardGradientDamping` – multiplicative factor applied to the stored
+  gradient when the guard fires, eliminating stale descent directions that would
+  otherwise kick the loop away from the optimum again.
+* `LockGuardDecayFactor` – scales the reference decay while locked so the best
+  intensity estimate remains conservative even over long runs.
+* `LockGuardMinReference` – minimum fraction of the target intensity that the
+  best recorded reference must exceed before the guard engages, guaranteeing the
+  protection operates only once the loop has genuinely reached the desired
+  operating point.
+* `LockGuardRecoverySamples` – number of additional measurements to acquire
+  after re-applying the golden control, taking the best sample as the restored
+  intensity to reject transient dips.
 * `SimulationPlant` – struct overriding the built-in simulation model.
 
 The live figure shows:
@@ -69,9 +98,16 @@ The controller continuously monitors the detector efficiency, using the
 smoothed detector signal against the decayed best-achieved intensity.  If the
 efficiency drops below the configurable threshold (95% by default) it restores
 the best-known actuator value and re-measures until the efficiency recovers, or
-gradually relaxes the reference level if the plant dynamics shift.  When the
-loop is stably locked, the adaptive perturbation/gain scaling suppresses
-residual dithering so the detector power and error traces stay quiet.
+gradually relaxes the reference level if the plant dynamics shift.  Once the
+loop has crossed the lock guard threshold it keeps a dedicated copy of the
+golden actuator command and sharply limits how far the measured intensity may
+fall (default 1%).  Guard-triggered recoveries temporarily pause new gradient
+updates, clamp the perturbation amplitude, take the best of several recovery
+measurements, and damp the accumulated gradient so the detector power stays
+within the requested >95% band with a typical minimum above 0.92 even under
+disturbance.  The plotted efficiency trace applies an additional exponential
+smoother while locked, matching the low-variance curve requested by the user
+without affecting the raw efficiency used by the control logic.
 
 ## Hardware Notes
 

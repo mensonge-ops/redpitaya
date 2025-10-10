@@ -82,55 +82,65 @@ function spgd_control(varargin)
     peakIntensity = -Inf;
     filteredIntensity = NaN;
     perturbScale = 1;
+    lockActive = false;
+    lockIntensity = -Inf;
+    lockControl = control;
+    freezeCounter = 0;
+    displayEfficiency = NaN;
 
     for k = 1:nIter
-        currentPerturb = max(opts.MinPerturbationRatio, min(1, perturbScale)) * opts.Perturbation;
-        perturb(:) = currentPerturb * (2 * randi([0, 1], nActuators, 1) - 1);
-
-        uPlus = max(min(control + perturb, opts.ControlLimits(2)), opts.ControlLimits(1));
-        backend.apply(uPlus);
-        pause(opts.SampleHoldTime);
-        yPlus = backend.measure();
-
-        uMinus = max(min(control - perturb, opts.ControlLimits(2)), opts.ControlLimits(1));
-        backend.apply(uMinus);
-        pause(opts.SampleHoldTime);
-        yMinus = backend.measure();
-
-        if ~all(isfinite([yPlus, yMinus]))
-            warning('Skipping iteration %d due to invalid measurements.', k);
-            controlHistory(k, :) = control;
-            if k > 1
-                intensityHistory(k) = intensityHistory(k-1);
-                errorHistory(k) = errorHistory(k-1);
-                referenceIntensityHistory(k) = referenceIntensityHistory(k-1);
-                peakIntensityHistory(k) = peakIntensityHistory(k-1);
-                efficiencyHistory(k) = efficiencyHistory(k-1);
-            else
-                intensityHistory(k) = NaN;
-                errorHistory(k) = NaN;
-                referenceIntensityHistory(k) = NaN;
-                peakIntensityHistory(k) = NaN;
-                efficiencyHistory(k) = NaN;
-            end
-            continue;
-        end
-
-        denom = uPlus - uMinus;
-        zeroMask = abs(denom) < eps;
-        denom(zeroMask) = eps .* sign(perturb(zeroMask) + (perturb(zeroMask) == 0));
-        denom(denom == 0) = eps;
-        gradient = (yPlus - yMinus) ./ denom;
-        if opts.GradientSmoothFactor <= 0 || k == 1
-            smoothedGradient = gradient;
+        skipGradient = freezeCounter > 0;
+        if skipGradient
+            freezeCounter = freezeCounter - 1;
         else
-            smoothedGradient = (1 - opts.GradientSmoothFactor) * smoothedGradient + opts.GradientSmoothFactor * gradient;
-        end
+            currentPerturb = max(opts.MinPerturbationRatio, min(1, perturbScale)) * opts.Perturbation;
+            perturb(:) = currentPerturb * (2 * randi([0, 1], nActuators, 1) - 1);
 
-        gainScale = max(opts.MinGainRatio, min(1, perturbScale));
-        control = control + (opts.Gain * gainScale) * smoothedGradient;
-        control = max(min(control, opts.ControlLimits(2)), opts.ControlLimits(1));
-        backend.apply(control);
+            uPlus = max(min(control + perturb, opts.ControlLimits(2)), opts.ControlLimits(1));
+            backend.apply(uPlus);
+            pause(opts.SampleHoldTime);
+            yPlus = backend.measure();
+
+            uMinus = max(min(control - perturb, opts.ControlLimits(2)), opts.ControlLimits(1));
+            backend.apply(uMinus);
+            pause(opts.SampleHoldTime);
+            yMinus = backend.measure();
+
+            if ~all(isfinite([yPlus, yMinus]))
+                warning('Skipping iteration %d due to invalid measurements.', k);
+                controlHistory(k, :) = control;
+                if k > 1
+                    intensityHistory(k) = intensityHistory(k-1);
+                    errorHistory(k) = errorHistory(k-1);
+                    referenceIntensityHistory(k) = referenceIntensityHistory(k-1);
+                    peakIntensityHistory(k) = peakIntensityHistory(k-1);
+                    efficiencyHistory(k) = efficiencyHistory(k-1);
+                else
+                    intensityHistory(k) = NaN;
+                    errorHistory(k) = NaN;
+                    referenceIntensityHistory(k) = NaN;
+                    peakIntensityHistory(k) = NaN;
+                    efficiencyHistory(k) = NaN;
+                end
+                continue;
+            end
+
+            denom = uPlus - uMinus;
+            zeroMask = abs(denom) < eps;
+            denom(zeroMask) = eps .* sign(perturb(zeroMask) + (perturb(zeroMask) == 0));
+            denom(denom == 0) = eps;
+            gradient = (yPlus - yMinus) ./ denom;
+            if opts.GradientSmoothFactor <= 0 || k == 1
+                smoothedGradient = gradient;
+            else
+                smoothedGradient = (1 - opts.GradientSmoothFactor) * smoothedGradient + opts.GradientSmoothFactor * gradient;
+            end
+
+            gainScale = max(opts.MinGainRatio, min(1, perturbScale));
+            control = control + (opts.Gain * gainScale) * smoothedGradient;
+            control = max(min(control, opts.ControlLimits(2)), opts.ControlLimits(1));
+            backend.apply(control);
+        end
 
         pause(opts.SampleHoldTime);
         intensity = backend.measure();
@@ -142,10 +152,14 @@ function spgd_control(varargin)
                 intensity = opts.Target;
             end
         end
-        if ~isfinite(filteredIntensity) || opts.MeasurementSmoothFactor <= 0
+        smoothFactor = opts.MeasurementSmoothFactor;
+        if lockActive && opts.LockedMeasurementSmoothFactor > opts.MeasurementSmoothFactor
+            smoothFactor = opts.LockedMeasurementSmoothFactor;
+        end
+        if ~isfinite(filteredIntensity) || smoothFactor <= 0
             filteredIntensity = intensity;
         else
-            filteredIntensity = (1 - opts.MeasurementSmoothFactor) * filteredIntensity + opts.MeasurementSmoothFactor * intensity;
+            filteredIntensity = (1 - smoothFactor) * filteredIntensity + smoothFactor * intensity;
         end
 
         err = opts.Target - filteredIntensity;
@@ -156,19 +170,32 @@ function spgd_control(varargin)
             referenceIntensity = filteredIntensity;
             referenceControl = control;
         else
-            decayedRef = referenceIntensity * (1 - opts.BestDecayRate);
-            referenceIntensity = decayedRef;
+            decay = opts.BestDecayRate;
+            if lockActive
+                decay = decay * opts.LockGuardDecayFactor;
+            end
+            referenceIntensity = referenceIntensity * (1 - decay);
             if filteredIntensity >= referenceIntensity
                 referenceIntensity = filteredIntensity;
                 referenceControl = control;
+                if lockActive
+                    lockControl = control;
+                    lockIntensity = max(lockIntensity, filteredIntensity);
+                end
             end
         end
 
         efficiency = filteredIntensity ./ max(referenceIntensity, eps);
+        restored = false;
+        guardTriggered = false;
         if efficiency < opts.EfficiencyThreshold && isfinite(referenceIntensity) && referenceIntensity > 0
             warning(['Efficiency %.3f below %.2f threshold at iteration %d. ', ...
                 'Restoring best-known control.'], efficiency, opts.EfficiencyThreshold, k);
-            control = referenceControl;
+            recoveryControl = referenceControl;
+            if lockActive
+                recoveryControl = lockControl;
+            end
+            control = recoveryControl;
             backend.apply(control);
             pause(opts.SampleHoldTime);
             attempt = 0;
@@ -178,18 +205,25 @@ function spgd_control(varargin)
                     warning('Invalid intensity during restoration attempt %d.', attempt + 1);
                     intensity = referenceIntensity;
                 end
-                if ~isfinite(filteredIntensity) || opts.MeasurementSmoothFactor <= 0
+                restoreSmooth = opts.MeasurementSmoothFactor;
+                if lockActive && opts.LockedMeasurementSmoothFactor > opts.MeasurementSmoothFactor
+                    restoreSmooth = opts.LockedMeasurementSmoothFactor;
+                end
+                if ~isfinite(filteredIntensity) || restoreSmooth <= 0
                     filteredIntensity = intensity;
                 else
-                    filteredIntensity = (1 - opts.MeasurementSmoothFactor) * filteredIntensity + opts.MeasurementSmoothFactor * intensity;
+                    filteredIntensity = (1 - restoreSmooth) * filteredIntensity + restoreSmooth * intensity;
                 end
                 peakIntensity = max(peakIntensity, filteredIntensity);
                 if ~isfinite(referenceIntensity)
                     referenceIntensity = filteredIntensity;
                     referenceControl = control;
                 else
-                    decayedRef = referenceIntensity * (1 - opts.BestDecayRate);
-                    referenceIntensity = decayedRef;
+                    decay = opts.BestDecayRate;
+                    if lockActive
+                        decay = decay * opts.LockGuardDecayFactor;
+                    end
+                    referenceIntensity = referenceIntensity * (1 - decay);
                     if filteredIntensity >= referenceIntensity
                         referenceIntensity = filteredIntensity;
                         referenceControl = control;
@@ -203,17 +237,106 @@ function spgd_control(varargin)
                 attempt = attempt + 1;
                 pause(opts.SampleHoldTime);
             end
+            restored = true;
+        end
+
+        if lockActive
+            lockRatio = filteredIntensity ./ max(lockIntensity, eps);
+            if lockRatio < 1 - opts.LockGuardDrop
+                control = lockControl;
+                backend.apply(control);
+                recovered = -Inf;
+                for jj = 1:opts.LockGuardRecoverySamples
+                    pause(opts.SampleHoldTime);
+                    sample = backend.measure();
+                    if isfinite(sample)
+                        if ~isfinite(recovered)
+                            recovered = sample;
+                        else
+                            recovered = max(recovered, sample);
+                        end
+                    end
+                end
+                if ~isfinite(recovered)
+                    warning('Invalid intensity during lock guard recovery at iteration %d.', k);
+                    recovered = max(lockIntensity, referenceIntensity);
+                end
+                reboundSmooth = max(opts.LockedMeasurementSmoothFactor, opts.MeasurementSmoothFactor);
+                if ~isfinite(filteredIntensity) || reboundSmooth <= 0
+                    filteredIntensity = recovered;
+                else
+                    filteredIntensity = (1 - reboundSmooth) * filteredIntensity + reboundSmooth * recovered;
+                end
+                intensity = recovered;
+                peakIntensity = max(peakIntensity, filteredIntensity);
+                if ~isfinite(referenceIntensity)
+                    referenceIntensity = filteredIntensity;
+                    referenceControl = control;
+                else
+                    decay = opts.BestDecayRate * opts.LockGuardDecayFactor;
+                    referenceIntensity = referenceIntensity * (1 - decay);
+                    if filteredIntensity >= referenceIntensity
+                        referenceIntensity = filteredIntensity;
+                        referenceControl = control;
+                    end
+                end
+                efficiency = filteredIntensity ./ max(referenceIntensity, eps);
+                err = opts.Target - filteredIntensity;
+                guardTriggered = true;
+            end
+        end
+
+        if ~lockActive && efficiency >= opts.LockGuardMinEfficiency && isfinite(referenceIntensity) && referenceIntensity >= opts.Target * opts.LockGuardMinReference
+            lockActive = true;
+            lockControl = referenceControl;
+            lockIntensity = max(referenceIntensity, filteredIntensity);
+        elseif lockActive
+            priorLock = lockIntensity;
+            lockDecay = opts.BestDecayRate * opts.LockGuardDecayFactor;
+            lockIntensity = priorLock * (1 - lockDecay);
+            if filteredIntensity >= priorLock
+                lockControl = control;
+                lockIntensity = filteredIntensity;
+            end
+        end
+
+        if restored || guardTriggered
+            freezeCounter = max(freezeCounter, opts.LockGuardFreezeIterations);
+            perturbScale = min(perturbScale, opts.LockGuardPerturbationRatio);
+            smoothedGradient = smoothedGradient * opts.LockGuardGradientDamping;
+            if ~lockActive
+                if isfinite(referenceIntensity) && referenceIntensity >= opts.Target * opts.LockGuardMinReference
+                    lockActive = true;
+                    lockControl = referenceControl;
+                    lockIntensity = max(referenceIntensity, filteredIntensity);
+                end
+            else
+                lockControl = control;
+                lockIntensity = max(lockIntensity, filteredIntensity);
+            end
+        end
+
+        effSmooth = opts.EfficiencySmoothFactor;
+        if lockActive
+            effSmooth = max(effSmooth, opts.LockedMeasurementSmoothFactor);
+        end
+        if ~isfinite(displayEfficiency) || effSmooth <= 0
+            displayEfficiency = efficiency;
+        else
+            displayEfficiency = (1 - effSmooth) * displayEfficiency + effSmooth * efficiency;
         end
 
         rawIntensityHistory(k) = intensity;
         intensityHistory(k) = filteredIntensity;
         referenceIntensityHistory(k) = referenceIntensity;
         peakIntensityHistory(k) = peakIntensity;
-        efficiencyHistory(k) = efficiency;
+        efficiencyHistory(k) = displayEfficiency;
         errorHistory(k) = err;
         controlHistory(k, :) = control;
 
-        if isfinite(referenceIntensity) && referenceIntensity > 0
+        if restored || guardTriggered
+            perturbScale = min(perturbScale, opts.LockGuardPerturbationRatio);
+        elseif isfinite(referenceIntensity) && referenceIntensity > 0
             drop = max(0, efficiency - opts.EfficiencyThreshold) / max(1 - opts.EfficiencyThreshold, eps);
             perturbScale = max(opts.MinPerturbationRatio, min(1, 1 - drop));
         else
@@ -259,13 +382,23 @@ function opts = parse_inputs(varargin)
     addParameter(p, 'SimulationPlant', struct(), @(x) isstruct(x));
     addParameter(p, 'SampleHoldTime', 1e-3, @(x) validateattributes(x, {'numeric'}, {'scalar', 'nonnegative'}));
     addParameter(p, 'EfficiencyThreshold', 0.95, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
-    addParameter(p, 'BestDecayRate', 1e-3, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<', 1}));
+    addParameter(p, 'BestDecayRate', 5e-4, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<', 1}));
     addParameter(p, 'RestoreMaxAttempts', 5, @(x) validateattributes(x, {'numeric'}, {'scalar', 'integer', '>=', 1}));
     addParameter(p, 'ControlLimits', [-1, 1], @(x) validateattributes(x, {'numeric'}, {'vector', 'numel', 2, 'increasing'}));
-    addParameter(p, 'MeasurementSmoothFactor', 0.3, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
+    addParameter(p, 'MeasurementSmoothFactor', 0.35, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
     addParameter(p, 'GradientSmoothFactor', 0.2, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
-    addParameter(p, 'MinPerturbationRatio', 0.1, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
-    addParameter(p, 'MinGainRatio', 0.1, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
+    addParameter(p, 'MinPerturbationRatio', 0.05, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
+    addParameter(p, 'MinGainRatio', 0.05, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
+    addParameter(p, 'EfficiencySmoothFactor', 0.6, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
+    addParameter(p, 'LockedMeasurementSmoothFactor', 0.95, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
+    addParameter(p, 'LockGuardDrop', 0.01, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<', 1}));
+    addParameter(p, 'LockGuardMinEfficiency', 0.95, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
+    addParameter(p, 'LockGuardFreezeIterations', 80, @(x) validateattributes(x, {'numeric'}, {'scalar', 'integer', '>=', 0}));
+    addParameter(p, 'LockGuardPerturbationRatio', 0.02, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
+    addParameter(p, 'LockGuardGradientDamping', 0.05, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
+    addParameter(p, 'LockGuardDecayFactor', 0.1, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
+    addParameter(p, 'LockGuardRecoverySamples', 3, @(x) validateattributes(x, {'numeric'}, {'scalar', 'integer', '>=', 1}));
+    addParameter(p, 'LockGuardMinReference', 0.99, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<=', 1}));
     parse(p, varargin{:});
 
     opts = p.Results;
