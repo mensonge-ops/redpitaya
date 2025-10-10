@@ -41,12 +41,23 @@ Important optional parameters include:
   threshold.
 * `ControlLimits` – saturation limits (in volts) applied to the control output,
   matching the ±1 V range of the Red Pitaya DAC by default.
+* `MeasurementSmoothFactor` – exponential smoothing factor (0–1) used to
+  average the detector readings that drive the controller; set to 0 to disable
+  smoothing.
+* `GradientSmoothFactor` – smoothing factor (0–1) applied to the estimated
+  gradient to tame stochastic fluctuations.
+* `MinPerturbationRatio` / `MinGainRatio` – floors that limit how much the SPGD
+  dither amplitude and gain shrink when efficiency exceeds the threshold.  This
+  adaptive scaling keeps the lock tight while preventing excessive dithering
+  once the optimum has been located.
 * `SimulationPlant` – struct overriding the built-in simulation model.
 
 The live figure shows:
 
-1. Measured intensity versus time, including the best-achieved peak trace and
-   the adaptive reference intensity used to enforce the efficiency threshold.
+1. Measured intensity versus time, showing the smoothed detector signal used by
+   the controller together with the raw samples, the best-achieved peak trace,
+   and the adaptive reference intensity used to enforce the efficiency
+   threshold.
 2. Tracking error relative to the target intensity.
 3. Single-sided intensity noise spectrum (dBc/Hz, logarithmic frequency axis)
    computed using Welch's method.
@@ -54,10 +65,13 @@ The live figure shows:
    axis), so you can confirm the actuator stays near the optimal command while
    preserving the required efficiency margin.
 
-The controller continuously monitors the detector efficiency.  If the measured
-intensity ever falls below the configurable threshold (95% by default) it
-restores the best-known actuator value and re-measures until the efficiency
-recovers, or gradually relaxes the reference level if the plant dynamics shift.
+The controller continuously monitors the detector efficiency, using the
+smoothed detector signal against the decayed best-achieved intensity.  If the
+efficiency drops below the configurable threshold (95% by default) it restores
+the best-known actuator value and re-measures until the efficiency recovers, or
+gradually relaxes the reference level if the plant dynamics shift.  When the
+loop is stably locked, the adaptive perturbation/gain scaling suppresses
+residual dithering so the detector power and error traces stay quiet.
 
 ## Hardware Notes
 
