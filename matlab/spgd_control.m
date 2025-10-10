@@ -60,9 +60,13 @@ function spgd_control(varargin)
     nIter = opts.Iterations;
     nActuators = opts.NumActuators;
     control = zeros(nActuators, 1);
+    referenceControl = control;
     perturb = zeros(nActuators, 1);
 
     intensityHistory = zeros(nIter, 1);
+    referenceIntensityHistory = zeros(nIter, 1);
+    peakIntensityHistory = zeros(nIter, 1);
+    efficiencyHistory = zeros(nIter, 1);
     errorHistory = zeros(nIter, 1);
     controlHistory = zeros(nIter, nActuators);
     timeAxis = (0:nIter-1).' ./ opts.SampleRate;
@@ -72,14 +76,19 @@ function spgd_control(varargin)
     backend.apply(control);
     pause(0.05); % allow the output to settle
 
+    referenceIntensity = -Inf;
+    peakIntensity = -Inf;
+
     for k = 1:nIter
         perturb(:) = opts.Perturbation * (2 * randi([0, 1], nActuators, 1) - 1);
 
-        backend.apply(control + perturb);
+        uPlus = max(min(control + perturb, opts.ControlLimits(2)), opts.ControlLimits(1));
+        backend.apply(uPlus);
         pause(opts.SampleHoldTime);
         yPlus = backend.measure();
 
-        backend.apply(control - perturb);
+        uMinus = max(min(control - perturb, opts.ControlLimits(2)), opts.ControlLimits(1));
+        backend.apply(uMinus);
         pause(opts.SampleHoldTime);
         yMinus = backend.measure();
 
@@ -89,19 +98,26 @@ function spgd_control(varargin)
             if k > 1
                 intensityHistory(k) = intensityHistory(k-1);
                 errorHistory(k) = errorHistory(k-1);
+                referenceIntensityHistory(k) = referenceIntensityHistory(k-1);
+                peakIntensityHistory(k) = peakIntensityHistory(k-1);
+                efficiencyHistory(k) = efficiencyHistory(k-1);
             else
                 intensityHistory(k) = NaN;
                 errorHistory(k) = NaN;
+                referenceIntensityHistory(k) = NaN;
+                peakIntensityHistory(k) = NaN;
+                efficiencyHistory(k) = NaN;
             end
             continue;
         end
 
-        denom = 2 * perturb;
+        denom = uPlus - uMinus;
         zeroMask = abs(denom) < eps;
         denom(zeroMask) = eps .* sign(perturb(zeroMask) + (perturb(zeroMask) == 0));
         denom(denom == 0) = eps;
         gradient = (yPlus - yMinus) ./ denom;
         control = control + opts.Gain * gradient;
+        control = max(min(control, opts.ControlLimits(2)), opts.ControlLimits(1));
         backend.apply(control);
 
         pause(opts.SampleHoldTime);
@@ -116,12 +132,68 @@ function spgd_control(varargin)
         end
         err = opts.Target - intensity;
 
+        peakIntensity = max(peakIntensity, intensity);
+
+        if ~isfinite(referenceIntensity)
+            referenceIntensity = intensity;
+            referenceControl = control;
+        else
+            decayedRef = referenceIntensity * (1 - opts.BestDecayRate);
+            if intensity >= decayedRef
+                referenceIntensity = intensity;
+                referenceControl = control;
+            else
+                referenceIntensity = decayedRef;
+            end
+        end
+
+        efficiency = intensity ./ max(referenceIntensity, eps);
+        if efficiency < opts.EfficiencyThreshold && isfinite(referenceIntensity) && referenceIntensity > 0
+            warning(['Efficiency %.3f below %.2f threshold at iteration %d. ', ...
+                'Restoring best-known control.'], efficiency, opts.EfficiencyThreshold, k);
+            control = referenceControl;
+            backend.apply(control);
+            pause(opts.SampleHoldTime);
+            attempt = 0;
+            while attempt < opts.RestoreMaxAttempts
+                intensity = backend.measure();
+                if ~isfinite(intensity)
+                    warning('Invalid intensity during restoration attempt %d.', attempt + 1);
+                    intensity = referenceIntensity;
+                end
+                peakIntensity = max(peakIntensity, intensity);
+                if ~isfinite(referenceIntensity)
+                    referenceIntensity = intensity;
+                    referenceControl = control;
+                else
+                    decayedRef = referenceIntensity * (1 - opts.BestDecayRate);
+                    if intensity >= decayedRef
+                        referenceIntensity = intensity;
+                        referenceControl = control;
+                    else
+                        referenceIntensity = decayedRef;
+                    end
+                end
+                efficiency = intensity ./ max(referenceIntensity, eps);
+                err = opts.Target - intensity;
+                if efficiency >= opts.EfficiencyThreshold
+                    break;
+                end
+                attempt = attempt + 1;
+                pause(opts.SampleHoldTime);
+            end
+        end
+
         intensityHistory(k) = intensity;
+        referenceIntensityHistory(k) = referenceIntensity;
+        peakIntensityHistory(k) = peakIntensity;
+        efficiencyHistory(k) = efficiency;
         errorHistory(k) = err;
         controlHistory(k, :) = control;
 
         if mod(k, opts.PlotUpdateInterval) == 0 || k == nIter
-            update_plots(plots, intensityHistory, errorHistory, controlHistory, ...
+            update_plots(plots, intensityHistory, referenceIntensityHistory, ...
+                peakIntensityHistory, efficiencyHistory, errorHistory, controlHistory, ...
                 timeAxis, opts, k);
         end
 
@@ -134,8 +206,10 @@ function spgd_control(varargin)
     backend.apply(control); % ensure actuator is left at last value
     drawnow;
 
-    fprintf('\nSPGD completed %d iterations in %s mode. Final intensity %.4f, error %.4f.\n', ...
-        k, opts.Mode, intensityHistory(k), errorHistory(k));
+    fprintf(['\nSPGD completed %d iterations in %s mode. Final intensity %.4f, ' ...
+        'reference %.4f, peak %.4f (efficiency %.3f), error %.4f.\n'], ...
+        k, opts.Mode, intensityHistory(k), referenceIntensity, peakIntensity, ...
+        efficiencyHistory(k), errorHistory(k));
 end
 
 function opts = parse_inputs(varargin)
@@ -155,11 +229,16 @@ function opts = parse_inputs(varargin)
     addParameter(p, 'Seed', 1, @(x) validateattributes(x, {'numeric'}, {'scalar', 'real'}));
     addParameter(p, 'SimulationPlant', struct(), @(x) isstruct(x));
     addParameter(p, 'SampleHoldTime', 1e-3, @(x) validateattributes(x, {'numeric'}, {'scalar', 'nonnegative'}));
+    addParameter(p, 'EfficiencyThreshold', 0.95, @(x) validateattributes(x, {'numeric'}, {'scalar', '>', 0, '<=', 1}));
+    addParameter(p, 'BestDecayRate', 1e-3, @(x) validateattributes(x, {'numeric'}, {'scalar', '>=', 0, '<', 1}));
+    addParameter(p, 'RestoreMaxAttempts', 5, @(x) validateattributes(x, {'numeric'}, {'scalar', 'integer', '>=', 1}));
+    addParameter(p, 'ControlLimits', [-1, 1], @(x) validateattributes(x, {'numeric'}, {'vector', 'numel', 2, 'increasing'}));
     parse(p, varargin{:});
 
     opts = p.Results;
     opts.Mode = lower(string(opts.Mode));
     opts.RedPitayaHost = char(opts.RedPitayaHost);
+    opts.ControlLimits = sort(opts.ControlLimits(:).');
 
     if opts.NumActuators ~= 1
         warning(['The provided SPGD implementation drives a single actuator. ', ...
@@ -199,7 +278,13 @@ function backend = create_simulation_backend(opts)
     end
 
     function intensity = measure_sim()
-        [intensity, state] = simulate_step(state, backendState.control, plant, opts);
+        nHold = max(1, round(opts.SampleHoldTime * opts.SampleRate));
+        acc = 0;
+        for ii = 1:nHold
+            [sample, state] = simulate_step(state, backendState.control, plant, opts);
+            acc = acc + sample;
+        end
+        intensity = acc / nHold;
     end
 end
 
@@ -295,10 +380,16 @@ function [fig, plots] = create_plots(opts, timeAxis)
 
     plots.input.ax = nexttile(t, 1);
     plots.input.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2);
+    hold(plots.input.ax, 'on');
+    plots.input.referenceLine = plot(timeAxis, nan(size(timeAxis)), '--', 'LineWidth', 1.1, 'Color', [0.49 0.18 0.56]);
+    plots.input.peakLine = plot(timeAxis, nan(size(timeAxis)), ':', 'LineWidth', 1, 'Color', [0.3 0.3 0.3]);
+    hold(plots.input.ax, 'off');
     xlabel(plots.input.ax, 'Time (s)');
     ylabel(plots.input.ax, 'Intensity (arb.)');
     title(plots.input.ax, 'Measured Intensity');
     grid(plots.input.ax, 'on');
+    lgd = legend(plots.input.ax, {'Intensity', 'Reference (>=95%)', 'Peak'}, 'Location', 'best');
+    set(lgd, 'AutoUpdate', 'off');
 
     plots.error.ax = nexttile(t, 2);
     plots.error.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', [0.85 0.33 0.1]);
@@ -315,19 +406,33 @@ function [fig, plots] = create_plots(opts, timeAxis)
     grid(plots.noise.ax, 'on');
 
     plots.output.ax = nexttile(t, 4);
+    yyaxis(plots.output.ax, 'left');
+    plots.efficiency.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', [0.0 0.45 0.74]);
+    ylabel(plots.output.ax, 'Efficiency');
+    ylim(plots.output.ax, [0 1.05]);
+
+    yyaxis(plots.output.ax, 'right');
     plots.output.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', [0.13 0.55 0.8]);
-    xlabel(plots.output.ax, 'Time (s)');
     ylabel(plots.output.ax, 'Control (V)');
-    title(plots.output.ax, 'Actuator Command');
+
+    xlabel(plots.output.ax, 'Time (s)');
+    title(plots.output.ax, sprintf('Efficiency & Control (threshold %.2f)', opts.EfficiencyThreshold));
     grid(plots.output.ax, 'on');
 
     drawnow;
 end
 
-function update_plots(plots, intensityHistory, errorHistory, controlHistory, timeAxis, opts, k)
+function update_plots(plots, intensityHistory, referenceIntensityHistory, peakIntensityHistory, ...
+    efficiencyHistory, errorHistory, controlHistory, timeAxis, opts, k)
     idx = 1:k;
     set(plots.input.line, 'XData', timeAxis(idx), 'YData', intensityHistory(idx));
+    set(plots.input.referenceLine, 'XData', timeAxis(idx), 'YData', referenceIntensityHistory(idx));
+    set(plots.input.peakLine, 'XData', timeAxis(idx), 'YData', peakIntensityHistory(idx));
     set(plots.error.line, 'XData', timeAxis(idx), 'YData', errorHistory(idx));
+    yyaxis(plots.output.ax, 'left');
+    set(plots.efficiency.line, 'XData', timeAxis(idx), 'YData', efficiencyHistory(idx));
+    ylim(plots.output.ax, [0, max(1.05, max(efficiencyHistory(idx))*1.05)]);
+    yyaxis(plots.output.ax, 'right');
     set(plots.output.line, 'XData', timeAxis(idx), 'YData', controlHistory(idx, 1));
 
     validErrors = errorHistory(idx);

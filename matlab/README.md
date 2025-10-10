@@ -26,18 +26,38 @@ Important optional parameters include:
   amplitude.
 * `Iterations` – number of iterations to execute.
 * `Target` – desired intensity set-point.
+* `EfficiencyThreshold` – minimum acceptable ratio of current intensity to the
+  best recorded intensity (default 0.95).  When the efficiency drops below this
+  limit the controller automatically restores the best-known actuator command to
+  keep the detector near its maximum.
+* `BestDecayRate` – fractional decay applied to the stored reference intensity
+  when no new maximum is observed (prevents stale peaks from dominating the
+  efficiency estimate).
 * `SampleRate` – sampling rate used for the real-time PSD estimate.
 * `SampleHoldTime` – dwell time after each output update before acquiring a
   sample (useful when the plant needs time to settle).
+* `RestoreMaxAttempts` – number of consecutive measurements allowed while
+  recovering the best-known control point when efficiency dips below the
+  threshold.
+* `ControlLimits` – saturation limits (in volts) applied to the control output,
+  matching the ±1 V range of the Red Pitaya DAC by default.
 * `SimulationPlant` – struct overriding the built-in simulation model.
 
 The live figure shows:
 
-1. Measured intensity versus time.
+1. Measured intensity versus time, including the best-achieved peak trace and
+   the adaptive reference intensity used to enforce the efficiency threshold.
 2. Tracking error relative to the target intensity.
 3. Single-sided intensity noise spectrum (dBc/Hz, logarithmic frequency axis)
    computed using Welch's method.
-4. Control output applied to the actuator.
+4. Combined plot showing efficiency (left axis) and control output (right
+   axis), so you can confirm the actuator stays near the optimal command while
+   preserving the required efficiency margin.
+
+The controller continuously monitors the detector efficiency.  If the measured
+intensity ever falls below the configurable threshold (95% by default) it
+restores the best-known actuator value and re-measures until the efficiency
+recovers, or gradually relaxes the reference level if the plant dynamics shift.
 
 ## Hardware Notes
 
