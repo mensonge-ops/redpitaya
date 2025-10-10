@@ -573,14 +573,18 @@ function [fig, plots] = create_plots(opts, timeAxis)
     grid(plots.noise.ax, 'on');
 
     plots.output.ax = nexttile(t, 4);
+    efficiencyColor = [0.93 0.69 0.13];
+    controlColor = [0.13 0.55 0.8];
     yyaxis(plots.output.ax, 'left');
-    plots.efficiency.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', [0.93 0.69 0.13]);
+    plots.efficiency.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', efficiencyColor);
     ylabel(plots.output.ax, 'Efficiency');
     ylim(plots.output.ax, [0 1.05]);
+    plots.output.ax.YColor = efficiencyColor;
 
     yyaxis(plots.output.ax, 'right');
-    plots.output.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', [0.13 0.55 0.8]);
+    plots.output.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', controlColor);
     ylabel(plots.output.ax, 'Control (V)');
+    plots.output.ax.YColor = controlColor;
 
     xlabel(plots.output.ax, 'Time (s)');
     title(plots.output.ax, sprintf('Efficiency & Control (threshold %.2f)', opts.EfficiencyThreshold));
