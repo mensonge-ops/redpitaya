@@ -441,7 +441,7 @@ function [fig, plots] = create_plots(opts, timeAxis)
 
     plots.output.ax = nexttile(t, 4);
     yyaxis(plots.output.ax, 'left');
-    plots.efficiency.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', [0.0 0.45 0.74]);
+    plots.efficiency.line = plot(timeAxis, nan(size(timeAxis)), 'LineWidth', 1.2, 'Color', [0.93 0.69 0.13]);
     ylabel(plots.output.ax, 'Efficiency');
     ylim(plots.output.ax, [0 1.05]);
 
