@@ -1075,8 +1075,7 @@ class EnhancedRealtimeDisplay:
         self.ax_efficiency = self.fig.add_subplot(gs[0:2, 0:2])
         self.ax_phase = self.fig.add_subplot(gs[2, 0:2])
         self.ax_intensity = self.fig.add_subplot(gs[3, 0:2])
-        self.ax_phasor = self.fig.add_subplot(gs[0, 2], projection='polar')
-        self.ax_noise = self.fig.add_subplot(gs[1, 2])
+        self.ax_noise = self.fig.add_subplot(gs[0:2, 2])
         self.ax_histogram = self.fig.add_subplot(gs[0, 3])
         self.ax_control = self.fig.add_subplot(gs[1, 3])
         self.ax_status = self.fig.add_subplot(gs[2:4, 2:4])
@@ -1115,10 +1114,6 @@ class EnhancedRealtimeDisplay:
         self.ax_intensity.set_ylim([0, 4.5])
         self.line_intensity, = self.ax_intensity.plot([], [], 'b-', linewidth=1.5)
         self.ax_intensity.axhline(y=4.0, color='g', linestyle='--', alpha=0.3)
-
-        # 相量图
-        self.ax_phasor.set_title('Phasor Diagram', fontsize=10, pad=15)
-        self.ax_phasor.set_ylim([0, 1.5])
 
         # 噪声谱
         self.ax_noise.set_xlabel('Frequency (Hz)', fontsize=9)
@@ -1251,25 +1246,6 @@ class EnhancedRealtimeDisplay:
             # 更新强度图
             self.line_intensity.set_data(times, intensities)
             self.ax_intensity.set_xlim(xlim)
-
-            # 更新相量图
-            self.ax_phasor.clear()
-            self.ax_phasor.set_title('Phasor Diagram', fontsize=10, pad=15)
-            self.ax_phasor.set_ylim([0, 1.5])
-            self.ax_phasor.arrow(0, 0, 0, 0.5, head_width=0.1, head_length=0.05,
-                                 fc='blue', ec='blue', alpha=0.7, label='Beam 1')
-            phase_diff = phase_error_value
-            self.ax_phasor.arrow(phase_diff, 0, 0, 0.5, head_width=0.1, head_length=0.05,
-                                 fc='red', ec='red', alpha=0.7, label='Beam 2')
-            combined_angle = phase_diff / 2
-            if hasattr(np, 'exp'):
-                combined_magnitude = np.abs(1 + np.exp(1j * phase_diff))
-            else:
-                combined_magnitude = abs(1 + cmath.exp(1j * phase_diff))
-            self.ax_phasor.arrow(combined_angle, 0, 0, combined_magnitude / 2,
-                                 head_width=0.15, head_length=0.08,
-                                 fc='green', ec='green', linewidth=2, label='Combined')
-            self.ax_phasor.legend(loc='upper right', fontsize=8)
 
             # 更新噪声谱
             if frame % 20 == 0 and hasattr(self.sim, 'calculate_noise_spectrum'):
