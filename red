@@ -1070,15 +1070,15 @@ class EnhancedRealtimeDisplay:
                           fontsize=14, fontweight='bold')
         self.max_duration = max_duration
 
-        gs = GridSpec(4, 4, figure=self.fig, hspace=0.3, wspace=0.3)
+        gs = GridSpec(4, 5, figure=self.fig, hspace=0.3, wspace=0.45)
 
         self.ax_efficiency = self.fig.add_subplot(gs[0:2, 0:2])
         self.ax_phase = self.fig.add_subplot(gs[2, 0:2])
         self.ax_intensity = self.fig.add_subplot(gs[3, 0:2])
         self.ax_noise = self.fig.add_subplot(gs[0:2, 2])
-        self.ax_histogram = self.fig.add_subplot(gs[0, 3])
-        self.ax_control = self.fig.add_subplot(gs[1, 3])
-        self.ax_status = self.fig.add_subplot(gs[2:4, 2:4])
+        self.ax_histogram = self.fig.add_subplot(gs[0:2, 3])
+        self.ax_control = self.fig.add_subplot(gs[0:2, 4])
+        self.ax_status = self.fig.add_subplot(gs[2:4, 2:5])
 
         self.setup_plots()
         self.fps_counter = deque(maxlen=30)
