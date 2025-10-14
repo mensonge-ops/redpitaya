@@ -1079,7 +1079,7 @@ def gather_inputs() -> LauncherConfig:
         config.port = _prompt_int("请输入端口", config.port, 1, 65_535)
         config.duration = None
     config.channels = _prompt_int("请输入锁定路数 (1-8)", config.channels, 1, 8)
-    config.rate_hz = _prompt_float("锁定速率 (Hz)", config.rate_hz, min_value=500.0)  # 建议从 500 Hz 起步
+    config.rate_hz = _prompt_float("锁定带宽 (Hz)", config.rate_hz, min_value=500.0)  # 建议从 500 Hz 起步
     if config.mode != "hardware":
         config.duration = _prompt_float("运行时长 (秒)", config.duration or 2.0, min_value=0.1)
     config.voltage_limit = _prompt_float("电压限制 (V)", config.voltage_limit, min_value=0.1)
@@ -1158,6 +1158,14 @@ def run_with_config(cfg: LauncherConfig) -> Tuple[LockingRunner, RunnerHistory]:
     amplitudes = [1.0 for _ in range(cfg.channels)]
     phase_per_volt = [cfg.phase_per_volt for _ in range(cfg.channels)]
     backend = build_backend(cfg, amplitudes, phase_per_volt)
+    if isinstance(backend, RedPitayaBackend):
+        try:
+            idn = backend.check_connection()
+        except Exception:
+            backend.close()
+            raise
+        else:
+            print(f"[Hardware] 连接到 Red Pitaya: {idn}")
     backend.configure()
     backend.set_max_intensity(sum(amplitudes) ** 2)
     controller = build_controller(cfg, phase_per_volt)
@@ -1253,7 +1261,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
-    if args.interactive:
+    if args.interactive or (argv is None and len(sys.argv) <= 1):
         cfg = gather_inputs()
     else:
         cfg = _args_to_config(args)
