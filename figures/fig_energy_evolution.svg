@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+<text x="400.0" y="25.0" font-family="sans-serif" font-size="18" text-anchor="middle">Energy diagnostics</text>
+<rect x="70" y="70.0" width="710" height="205.0" fill="none" stroke="#444" stroke-width="1" />
+<line x1="70.0" y1="275.0" x2="70.0" y2="281.0" stroke="#333" />
+<text x="70.0" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">1.00</text>
+<line x1="247.5" y1="275.0" x2="247.5" y2="281.0" stroke="#333" />
+<text x="247.5" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">2.25</text>
+<line x1="425.0" y1="275.0" x2="425.0" y2="281.0" stroke="#333" />
+<text x="425.0" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">3.50</text>
+<line x1="602.5" y1="275.0" x2="602.5" y2="281.0" stroke="#333" />
+<text x="602.5" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">4.75</text>
+<line x1="780.0" y1="275.0" x2="780.0" y2="281.0" stroke="#333" />
+<text x="780.0" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">6.00</text>
+<line x1="64" y1="275.0" x2="70" y2="275.0" stroke="#333" />
+<text x="60" y="279.0" font-family="sans-serif" font-size="12" text-anchor="end">1.1e-05</text>
+<line x1="64" y1="223.75" x2="70" y2="223.75" stroke="#333" />
+<text x="60" y="227.75" font-family="sans-serif" font-size="12" text-anchor="end">0.330</text>
+<line x1="64" y1="172.5" x2="70" y2="172.5" stroke="#333" />
+<text x="60" y="176.5" font-family="sans-serif" font-size="12" text-anchor="end">0.660</text>
+<line x1="64" y1="121.25" x2="70" y2="121.25" stroke="#333" />
+<text x="60" y="125.25" font-family="sans-serif" font-size="12" text-anchor="end">0.991</text>
+<line x1="64" y1="70.0" x2="70" y2="70.0" stroke="#333" />
+<text x="60" y="74.0" font-family="sans-serif" font-size="12" text-anchor="end">1.32</text>
+<text x="425.0" y="315.0" font-family="sans-serif" font-size="14" text-anchor="middle">Round trip</text>
+<text x="20" y="172.5" font-family="sans-serif" font-size="14" text-anchor="middle" transform="rotate(-90 20,172.5)">Energy (arb.)</text>
+<text x="425.0" y="64.0" font-family="sans-serif" font-size="15" text-anchor="middle">Round-trip energy evolution</text>
+<polyline points="70.00,70.00 212.00,255.20 354.00,273.09 496.00,274.82 638.00,274.98 780.00,275.00" fill="none" stroke="#1f77b4" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<rect x="70" y="315.0" width="710" height="205.0" fill="none" stroke="#444" stroke-width="1" />
+<line x1="70.0" y1="520.0" x2="70.0" y2="526.0" stroke="#333" />
+<text x="70.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1.00</text>
+<line x1="247.5" y1="520.0" x2="247.5" y2="526.0" stroke="#333" />
+<text x="247.5" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">2.25</text>
+<line x1="425.0" y1="520.0" x2="425.0" y2="526.0" stroke="#333" />
+<text x="425.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">3.50</text>
+<line x1="602.5" y1="520.0" x2="602.5" y2="526.0" stroke="#333" />
+<text x="602.5" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">4.75</text>
+<line x1="780.0" y1="520.0" x2="780.0" y2="526.0" stroke="#333" />
+<text x="780.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">6.00</text>
+<line x1="64" y1="520.0" x2="70" y2="520.0" stroke="#333" />
+<text x="60" y="524.0" font-family="sans-serif" font-size="12" text-anchor="end">1.69</text>
+<line x1="64" y1="468.75" x2="70" y2="468.75" stroke="#333" />
+<text x="60" y="472.75" font-family="sans-serif" font-size="12" text-anchor="end">1.79</text>
+<line x1="64" y1="417.5" x2="70" y2="417.5" stroke="#333" />
+<text x="60" y="421.5" font-family="sans-serif" font-size="12" text-anchor="end">1.88</text>
+<line x1="64" y1="366.25" x2="70" y2="366.25" stroke="#333" />
+<text x="60" y="370.25" font-family="sans-serif" font-size="12" text-anchor="end">1.98</text>
+<line x1="64" y1="315.0" x2="70" y2="315.0" stroke="#333" />
+<text x="60" y="319.0" font-family="sans-serif" font-size="12" text-anchor="end">2.07</text>
+<text x="425.0" y="560.0" font-family="sans-serif" font-size="14" text-anchor="middle">Round trip</text>
+<text x="20" y="417.5" font-family="sans-serif" font-size="14" text-anchor="middle" transform="rotate(-90 20,417.5)">RMS width (ps)</text>
+<text x="425.0" y="309.0" font-family="sans-serif" font-size="15" text-anchor="middle">Pulse width evolution</text>
+<polyline points="70.00,520.00 212.00,509.98 354.00,489.56 496.00,453.64 638.00,397.19 780.00,315.00" fill="none" stroke="#ff7f0e" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+</svg>

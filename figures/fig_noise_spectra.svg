@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+<text x="400.0" y="25.0" font-family="sans-serif" font-size="18" text-anchor="middle">Noise spectra</text>
+<rect x="70" y="70.0" width="710" height="205.0" fill="none" stroke="#444" stroke-width="1" />
+<line x1="70.0" y1="275.0" x2="70.0" y2="281.0" stroke="#333" />
+<text x="70.0" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">1e11</text>
+<line x1="659.6422368425067" y1="275.0" x2="659.6422368425067" y2="281.0" stroke="#333" />
+<text x="659.6422368425067" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">1e12</text>
+<line x1="1249.2844736850134" y1="275.0" x2="1249.2844736850134" y2="281.0" stroke="#333" />
+<text x="1249.2844736850134" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">1e13</text>
+<line x1="64" y1="284.6329426154528" x2="70" y2="284.6329426154528" stroke="#333" />
+<text x="60" y="288.6329426154528" font-family="sans-serif" font-size="12" text-anchor="end">1e0</text>
+<line x1="64" y1="179.60714614069008" x2="70" y2="179.60714614069008" stroke="#333" />
+<text x="60" y="183.60714614069008" font-family="sans-serif" font-size="12" text-anchor="end">1e1</text>
+<line x1="64" y1="74.58134966592738" x2="70" y2="74.58134966592738" stroke="#333" />
+<text x="60" y="78.58134966592738" font-family="sans-serif" font-size="12" text-anchor="end">1e2</text>
+<line x1="64" y1="-30.444446808835323" x2="70" y2="-30.444446808835323" stroke="#333" />
+<text x="60" y="-26.444446808835323" font-family="sans-serif" font-size="12" text-anchor="end">1e3</text>
+<text x="425.0" y="315.0" font-family="sans-serif" font-size="14" text-anchor="middle">Frequency (Hz)</text>
+<text x="20" y="172.5" font-family="sans-serif" font-size="14" text-anchor="middle" transform="rotate(-90 20,172.5)">Phase noise PSD</text>
+<text x="425.0" y="64.0" font-family="sans-serif" font-size="15" text-anchor="middle">Phase noise</text>
+<polyline points="70.00,70.00 247.50,129.97 351.33,160.10 425.00,187.13 482.14,206.67 528.83,221.22 568.31,233.13 602.50,243.22 632.66,251.48 659.64,258.17 684.05,263.65 706.33,267.62 726.83,270.88 745.81,273.26 763.47,274.69 780.00,275.00" fill="none" stroke="#1f77b4" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<rect x="70" y="315.0" width="710" height="205.0" fill="none" stroke="#444" stroke-width="1" />
+<line x1="70.0" y1="520.0" x2="70.0" y2="526.0" stroke="#333" />
+<text x="70.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1e11</text>
+<line x1="659.6422368425067" y1="520.0" x2="659.6422368425067" y2="526.0" stroke="#333" />
+<text x="659.6422368425067" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1e12</text>
+<line x1="1249.2844736850134" y1="520.0" x2="1249.2844736850134" y2="526.0" stroke="#333" />
+<text x="1249.2844736850134" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1e13</text>
+<line x1="64" y1="524.1156987508327" x2="70" y2="524.1156987508327" stroke="#333" />
+<text x="60" y="528.1156987508327" font-family="sans-serif" font-size="12" text-anchor="end">1e-19</text>
+<line x1="64" y1="494.45691101977" x2="70" y2="494.45691101977" stroke="#333" />
+<text x="60" y="498.45691101977" font-family="sans-serif" font-size="12" text-anchor="end">1e-18</text>
+<line x1="64" y1="464.79812328870725" x2="70" y2="464.79812328870725" stroke="#333" />
+<text x="60" y="468.79812328870725" font-family="sans-serif" font-size="12" text-anchor="end">1e-17</text>
+<line x1="64" y1="435.1393355576445" x2="70" y2="435.1393355576445" stroke="#333" />
+<text x="60" y="439.1393355576445" font-family="sans-serif" font-size="12" text-anchor="end">1e-16</text>
+<line x1="64" y1="405.48054782658176" x2="70" y2="405.48054782658176" stroke="#333" />
+<text x="60" y="409.48054782658176" font-family="sans-serif" font-size="12" text-anchor="end">1e-15</text>
+<line x1="64" y1="375.82176009551904" x2="70" y2="375.82176009551904" stroke="#333" />
+<text x="60" y="379.82176009551904" font-family="sans-serif" font-size="12" text-anchor="end">1e-14</text>
+<line x1="64" y1="346.16297236445627" x2="70" y2="346.16297236445627" stroke="#333" />
+<text x="60" y="350.16297236445627" font-family="sans-serif" font-size="12" text-anchor="end">1e-13</text>
+<line x1="64" y1="316.5041846333935" x2="70" y2="316.5041846333935" stroke="#333" />
+<text x="60" y="320.5041846333935" font-family="sans-serif" font-size="12" text-anchor="end">1e-12</text>
+<line x1="64" y1="286.8453969023308" x2="70" y2="286.8453969023308" stroke="#333" />
+<text x="60" y="290.8453969023308" font-family="sans-serif" font-size="12" text-anchor="end">1e-11</text>
+<text x="425.0" y="560.0" font-family="sans-serif" font-size="14" text-anchor="middle">Frequency (Hz)</text>
+<text x="20" y="417.5" font-family="sans-serif" font-size="14" text-anchor="middle" transform="rotate(-90 20,417.5)">RIN PSD</text>
+<text x="425.0" y="309.0" font-family="sans-serif" font-size="15" text-anchor="middle">Relative intensity noise</text>
+<polyline points="70.00,315.00 247.50,360.23 351.33,408.19 425.00,423.74 482.14,436.71 528.83,446.34 568.31,466.74 602.50,474.71 632.66,505.53 659.64,520.00 684.05,499.56 706.33,499.77 726.83,488.25 745.81,506.62 763.47,497.54 780.00,492.70" fill="none" stroke="#d62728" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+</svg>

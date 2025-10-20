@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+<text x="400.0" y="25.0" font-family="sans-serif" font-size="18" text-anchor="middle">Pulse and spectrum</text>
+<rect x="70" y="70.0" width="710" height="205.0" fill="none" stroke="#444" stroke-width="1" />
+<line x1="70.0" y1="275.0" x2="70.0" y2="281.0" stroke="#333" />
+<text x="70.0" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">0</text>
+<line x1="247.5" y1="275.0" x2="247.5" y2="281.0" stroke="#333" />
+<text x="247.5" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">2.42</text>
+<line x1="425.0" y1="275.0" x2="425.0" y2="281.0" stroke="#333" />
+<text x="425.0" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">4.84</text>
+<line x1="602.5" y1="275.0" x2="602.5" y2="281.0" stroke="#333" />
+<text x="602.5" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">7.27</text>
+<line x1="780.0" y1="275.0" x2="780.0" y2="281.0" stroke="#333" />
+<text x="780.0" y="297.0" font-family="sans-serif" font-size="12" text-anchor="middle">9.69</text>
+<line x1="64" y1="275.0" x2="70" y2="275.0" stroke="#333" />
+<text x="60" y="279.0" font-family="sans-serif" font-size="12" text-anchor="end">4.4e-08</text>
+<line x1="64" y1="223.75" x2="70" y2="223.75" stroke="#333" />
+<text x="60" y="227.75" font-family="sans-serif" font-size="12" text-anchor="end">2.3e-07</text>
+<line x1="64" y1="172.5" x2="70" y2="172.5" stroke="#333" />
+<text x="60" y="176.5" font-family="sans-serif" font-size="12" text-anchor="end">4.1e-07</text>
+<line x1="64" y1="121.24999999999997" x2="70" y2="121.24999999999997" stroke="#333" />
+<text x="60" y="125.24999999999997" font-family="sans-serif" font-size="12" text-anchor="end">5.9e-07</text>
+<line x1="64" y1="70.0" x2="70" y2="70.0" stroke="#333" />
+<text x="60" y="74.0" font-family="sans-serif" font-size="12" text-anchor="end">7.7e-07</text>
+<text x="425.0" y="315.0" font-family="sans-serif" font-size="14" text-anchor="middle">Time (ps)</text>
+<text x="20" y="172.5" font-family="sans-serif" font-size="14" text-anchor="middle" transform="rotate(-90 20,172.5)">Intensity (arb.)</text>
+<text x="425.0" y="64.0" font-family="sans-serif" font-size="15" text-anchor="middle">Mode-locked pulse</text>
+<polyline points="70.00,223.86 92.90,203.09 115.81,179.31 138.71,156.15 161.61,132.55 184.52,108.79 207.42,89.01 230.32,74.87 253.23,70.00 276.13,70.43 299.03,75.76 321.94,84.00 344.84,96.54 367.74,114.20 390.65,136.90 413.55,162.79 436.45,189.68 459.35,213.41 482.26,233.84 505.16,249.33 528.06,260.55 550.97,267.95 573.87,271.86 596.77,273.97 619.68,275.00 642.58,274.34 665.48,272.89 688.39,270.97 711.29,267.05 734.19,260.55 757.10,252.27 780.00,240.52" fill="none" stroke="#3366cc" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+<rect x="70" y="315.0" width="710" height="205.0" fill="none" stroke="#444" stroke-width="1" />
+<line x1="70.0" y1="520.0" x2="70.0" y2="526.0" stroke="#333" />
+<text x="70.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1.0e+03</text>
+<line x1="247.4999999999963" y1="520.0" x2="247.4999999999963" y2="526.0" stroke="#333" />
+<text x="247.4999999999963" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1.0e+03</text>
+<line x1="424.9999999999926" y1="520.0" x2="424.9999999999926" y2="526.0" stroke="#333" />
+<text x="424.9999999999926" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1.0e+03</text>
+<line x1="602.5000000000038" y1="520.0" x2="602.5000000000038" y2="526.0" stroke="#333" />
+<text x="602.5000000000038" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1.0e+03</text>
+<line x1="780.0" y1="520.0" x2="780.0" y2="526.0" stroke="#333" />
+<text x="780.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">1.0e+03</text>
+<line x1="64" y1="520.0" x2="70" y2="520.0" stroke="#333" />
+<text x="60" y="524.0" font-family="sans-serif" font-size="12" text-anchor="end">6.4e-13</text>
+<line x1="64" y1="468.75" x2="70" y2="468.75" stroke="#333" />
+<text x="60" y="472.75" font-family="sans-serif" font-size="12" text-anchor="end">7.1e-05</text>
+<line x1="64" y1="417.5" x2="70" y2="417.5" stroke="#333" />
+<text x="60" y="421.5" font-family="sans-serif" font-size="12" text-anchor="end">1.4e-04</text>
+<line x1="64" y1="366.25" x2="70" y2="366.25" stroke="#333" />
+<text x="60" y="370.25" font-family="sans-serif" font-size="12" text-anchor="end">2.1e-04</text>
+<line x1="64" y1="315.0" x2="70" y2="315.0" stroke="#333" />
+<text x="60" y="319.0" font-family="sans-serif" font-size="12" text-anchor="end">2.8e-04</text>
+<text x="425.0" y="560.0" font-family="sans-serif" font-size="14" text-anchor="middle">Wavelength (nm)</text>
+<text x="20" y="417.5" font-family="sans-serif" font-size="14" text-anchor="middle" transform="rotate(-90 20,417.5)">Spectral power (arb.)</text>
+<text x="425.0" y="309.0" font-family="sans-serif" font-size="15" text-anchor="middle">Optical spectrum</text>
+<polyline points="780.00,520.00 756.86,520.00 733.73,520.00 710.63,520.00 687.53,520.00 664.46,520.00 641.40,520.00 618.35,520.00 595.32,520.00 572.31,520.00 549.31,520.00 526.33,520.00 503.36,520.00 480.41,520.00 457.48,520.00 434.56,520.00 411.66,520.00 388.77,499.72 365.90,315.00 343.05,487.58 320.21,519.99 297.38,519.98 274.57,519.99 251.78,520.00 229.00,520.00 206.24,520.00 183.50,520.00 160.77,520.00 138.05,520.00 115.35,520.00 92.67,520.00 70.00,520.00" fill="none" stroke="#cc5533" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+</svg>
