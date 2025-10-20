@@ -443,6 +443,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coupler-steps", type=int, default=8, help="Grid points for coupler sweep")
     parser.add_argument("--bandwidth-steps", type=int, default=9, help="CFBG bandwidth samples")
     parser.add_argument("--dispersion-steps", type=int, default=8, help="Dispersion samples")
+    parser.add_argument("--skip-sweeps", action="store_true", help="Skip parameter sweeps to focus on baseline locking")
     return parser.parse_args()
 
 
@@ -462,34 +463,35 @@ def main() -> None:
     plot_pseudo_3d_traces(baseline, args.output)
     plot_noise_spectra(baseline, args.output)
 
-    pump_values = linspace(0.3, 1.0, args.pump_steps)
-    coupler_values = linspace(0.4, 0.7, args.coupler_steps)
-    avg_power, locking_map = pump_vs_coupler_sweep(
-        pump_values=pump_values,
-        coupler_values=coupler_values,
-        time_window_ps=args.time_window_ps,
-        num_samples=args.samples,
-        num_round_trips=args.sweep_round_trips,
-    )
-    plot_coupler_pump_heatmap(pump_values, coupler_values, avg_power, locking_map, args.output)
+    if not args.skip_sweeps:
+        pump_values = linspace(0.3, 1.0, args.pump_steps)
+        coupler_values = linspace(0.4, 0.7, args.coupler_steps)
+        avg_power, locking_map = pump_vs_coupler_sweep(
+            pump_values=pump_values,
+            coupler_values=coupler_values,
+            time_window_ps=args.time_window_ps,
+            num_samples=args.samples,
+            num_round_trips=args.sweep_round_trips,
+        )
+        plot_coupler_pump_heatmap(pump_values, coupler_values, avg_power, locking_map, args.output)
 
-    bandwidth_values, avg_power_bw, locking_bw = cfbg_bandwidth_sweep(
-        bandwidth_values=linspace(8.0, 24.0, args.bandwidth_steps),
-        pump_power_W=args.pump,
-        num_round_trips=args.sweep_round_trips,
-        time_window_ps=args.time_window_ps,
-        num_samples=args.samples,
-    )
-    plot_cfbg_bandwidth(bandwidth_values, avg_power_bw, locking_bw, args.output)
+        bandwidth_values, avg_power_bw, locking_bw = cfbg_bandwidth_sweep(
+            bandwidth_values=linspace(8.0, 24.0, args.bandwidth_steps),
+            pump_power_W=args.pump,
+            num_round_trips=args.sweep_round_trips,
+            time_window_ps=args.time_window_ps,
+            num_samples=args.samples,
+        )
+        plot_cfbg_bandwidth(bandwidth_values, avg_power_bw, locking_bw, args.output)
 
-    dispersion_values, pulse_widths, locking_disp = dispersion_sweep(
-        dispersion_values=linspace(-0.05, 0.1, args.dispersion_steps),
-        pump_power_W=args.pump,
-        num_round_trips=args.sweep_round_trips,
-        time_window_ps=args.time_window_ps,
-        num_samples=args.samples,
-    )
-    plot_dispersion_scan(dispersion_values, pulse_widths, locking_disp, args.output)
+        dispersion_values, pulse_widths, locking_disp = dispersion_sweep(
+            dispersion_values=linspace(-0.05, 0.1, args.dispersion_steps),
+            pump_power_W=args.pump,
+            num_round_trips=args.sweep_round_trips,
+            time_window_ps=args.time_window_ps,
+            num_samples=args.samples,
+        )
+        plot_dispersion_scan(dispersion_values, pulse_widths, locking_disp, args.output)
 
     print(f"Figures stored in {args.output.resolve()}")
 

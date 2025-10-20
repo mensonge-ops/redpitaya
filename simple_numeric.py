@@ -82,6 +82,23 @@ def complex_exp(values: Sequence[complex]) -> List[complex]:
     return [cmath.exp(v) for v in values]
 
 
+def _is_power_of_two(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _bit_reversed_indices(n: int) -> List[int]:
+    bits = n.bit_length() - 1
+    indices = [0] * n
+    for i in range(n):
+        rev = 0
+        value = i
+        for _ in range(bits):
+            rev = (rev << 1) | (value & 1)
+            value >>= 1
+        indices[i] = rev
+    return indices
+
+
 def fft(seq: Sequence[complex]) -> List[complex]:
     seq = list(seq)
     n = len(seq)
@@ -89,12 +106,27 @@ def fft(seq: Sequence[complex]) -> List[complex]:
         return []
     if n == 1:
         return [seq[0]]
-    if n % 2:
+    if not _is_power_of_two(n):
         return [sum(seq[j] * cmath.exp(-2j * math.pi * k * j / n) for j in range(n)) for k in range(n)]
-    even = fft(seq[0::2])
-    odd = fft(seq[1::2])
-    factor = [cmath.exp(-2j * math.pi * k / n) * odd[k] for k in range(n // 2)]
-    return [even[k] + factor[k] for k in range(n // 2)] + [even[k] - factor[k] for k in range(n // 2)]
+
+    indices = _bit_reversed_indices(n)
+    data = [seq[idx] for idx in indices]
+
+    length = 2
+    while length <= n:
+        half = length // 2
+        angle = -2j * math.pi / length
+        w_len = cmath.exp(angle)
+        for start in range(0, n, length):
+            w = 1 + 0j
+            for pos in range(start, start + half):
+                u = data[pos]
+                v = w * data[pos + half]
+                data[pos] = u + v
+                data[pos + half] = u - v
+                w *= w_len
+        length *= 2
+    return data
 
 
 def ifft(seq: Sequence[complex]) -> List[complex]:

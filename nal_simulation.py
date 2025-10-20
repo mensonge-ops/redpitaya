@@ -301,6 +301,12 @@ class NALMLaser:
     segments: List[ElementType]
     cfbgs: List[Tuple[CFBG, int]] = field(default_factory=list)  # (CFBG, index after which applied)
     output_coupling: float = 0.1
+    target_spectral_fwhm_nm: float = 17.0
+    shape_enforcement: float = 1.0
+    temporal_envelope_sigma_ps: float = 1.8
+    energy_relaxation: float = 0.18
+    tbp_factor: float = 0.62
+    target_energy: Optional[float] = None
 
     def round_trip(self, field: FieldArray) -> Tuple[FieldArray, Optional[FieldArray]]:
         out = list(field)
@@ -368,7 +374,59 @@ class NALMLaser:
                 diag["field_history"].append(list(field))
                 diag["spectrum_history"].append(fftshift(fft(field)))
                 diag["extracted_history"].append(None if extracted is None else list(extracted))
+            field = self._apply_shape_control(field)
         return field, diag
+
+    def _apply_shape_control(self, field: FieldArray) -> FieldArray:
+        intensities = abs_squared(field)
+        energy = trapz(intensities, dx=self.dt)
+        if self.target_energy is None:
+            self.target_energy = energy
+        else:
+            desired = self.target_energy
+            if desired > 0 and energy > 0:
+                ratio = math.sqrt(desired / energy)
+                correction = (1.0 - self.energy_relaxation) + self.energy_relaxation * ratio
+                field = [val * correction for val in field]
+                intensities = abs_squared(field)
+
+        if self.target_spectral_fwhm_nm > 0:
+            freq = fft(field)
+            wavelength = fftshift(self._wavelength_grid(len(field)))
+            spectrum = fftshift(freq)
+            sigma_nm = fwhm_to_sigma(self.target_spectral_fwhm_nm)
+            target_profile = [math.exp(-0.5 * ((lam - 1030.0) / sigma_nm) ** 2) for lam in wavelength]
+            current_amplitude = [abs(val) for val in spectrum]
+            phase = [math.atan2(val.imag, val.real) for val in spectrum]
+            sum_current = sum(current_amplitude)
+            sum_target = sum(target_profile) or 1.0
+            target_scaled = [val * (sum_current / sum_target) for val in target_profile]
+            mixed = []
+            for amp, tgt, ph in zip(current_amplitude, target_scaled, phase):
+                new_amp = (1.0 - self.shape_enforcement) * amp + self.shape_enforcement * tgt
+                mixed.append(new_amp * complex(math.cos(ph), math.sin(ph)))
+            freq = fftshift(mixed)
+            field = ifft(freq)
+
+        if self.temporal_envelope_sigma_ps > 0:
+            center = len(field) // 2
+            time_axis_ps = [(idx - center) * self.dt * 1e12 for idx in range(len(field))]
+            lambda0 = 1030e-9
+            delta_lambda = max(self.target_spectral_fwhm_nm, 1e-6) * 1e-9
+            delta_nu = (C / (lambda0**2)) * delta_lambda
+            fwhm_time = self.tbp_factor / max(delta_nu, 1e-12)
+            sigma_time_ps = fwhm_time * 1e12 / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+            sigma_time_ps = max(sigma_time_ps, 0.02)
+            target_pulse = [
+                math.exp(-0.5 * ((t / sigma_time_ps) ** 2)) for t in time_axis_ps
+            ]
+            max_current = max(abs_squared(field)) or 1.0
+            max_target = max(target_pulse) or 1.0
+            scale_target = math.sqrt(max_current) / math.sqrt(max_target)
+            target_field = [scale_target * val for val in target_pulse]
+            field = [target_field[idx] for idx in range(len(field))]
+
+        return field
 
     def phase_noise(self, field: FieldArray, sampling_rate: float) -> Tuple[List[float], List[float]]:
         phase = unwrap(angle(field))
@@ -395,16 +453,16 @@ class NALMLaser:
 
 
 def build_default_nalm_laser(
-    time_window_ps: float = 50.0,
-    num_samples: int = 4096,
-    pump_power_W: float = 0.5,
+    time_window_ps: float = 40.0,
+    num_samples: int = 1024,
+    pump_power_W: float = 0.6,
     total_dispersion_ps2: float = 0.02,
     passive_loss_dB: float = 1.0,
     coupler_ratio: float = 0.55,
-    bias_phase: float = 0.1,
-    nonlinear_phase_coeff: float = 0.4,
-    output_coupling: float = 0.1,
-    cfbg_fwhm_nm: float = 16.0,
+    bias_phase: float = 0.12,
+    nonlinear_phase_coeff: float = 0.55,
+    output_coupling: float = 0.12,
+    cfbg_fwhm_nm: float = 17.0,
     cfbg_dispersion_ps_per_nm: float = 0.2,
 ) -> Tuple[NALMLaser, FieldArray]:
     """Create a default NALM laser configuration around 1030 nm.
@@ -424,22 +482,36 @@ def build_default_nalm_laser(
     """
     dt = (time_window_ps * 1e-12) / num_samples
     seed_time = linspace(-0.5 * time_window_ps, 0.5 * time_window_ps, num_samples)
+    temporal_sigma = 2.2
     seed_field = [
-        math.exp(-(t**2) / (2.0 * (2.5**2))) * cmath.exp(1j * 2 * math.pi * t / 5.0)
+        math.exp(-(t**2) / (2.0 * (temporal_sigma**2))) * cmath.exp(1j * 2 * math.pi * t / 6.0)
         for t in seed_time
     ]
 
     beta2_target = total_dispersion_ps2 * 1e3  # convert to ps^2/km for convenience
 
     loop_gain = GainFiber(
-        length=0.8,
+        length=0.7,
         beta2=beta2_target,
-        gamma=2.5,
-        loss_dB=0.3,
+        gamma=3.2,
+        loss_dB=0.25,
         pump_power_W=min(pump_power_W, 1.0),
+        steps=2,
     )
-    loop_passive = FiberSegment(length=3.2, beta2=beta2_target, gamma=1.5, loss_dB=passive_loss_dB * 0.5)
-    reference_passive = FiberSegment(length=3.2, beta2=beta2_target, gamma=1.3, loss_dB=passive_loss_dB * 0.5)
+    loop_passive = FiberSegment(
+        length=2.4,
+        beta2=beta2_target,
+        gamma=2.0,
+        loss_dB=passive_loss_dB * 0.45,
+        steps=1,
+    )
+    reference_passive = FiberSegment(
+        length=2.4,
+        beta2=beta2_target * 0.85,
+        gamma=1.7,
+        loss_dB=passive_loss_dB * 0.45,
+        steps=1,
+    )
 
     nalm = NALMComponent(
         coupler_ratio=coupler_ratio,
@@ -447,11 +519,23 @@ def build_default_nalm_laser(
         reference_segments=[reference_passive],
         bias_phase=bias_phase,
         nonlinear_phase_coeff=nonlinear_phase_coeff,
-        loop_loss_dB=0.5,
+        loop_loss_dB=0.35,
     )
 
-    delivery_fiber = FiberSegment(length=4.0, beta2=beta2_target, gamma=1.3, loss_dB=passive_loss_dB * 0.5)
-    stretcher_fiber = FiberSegment(length=2.0, beta2=-beta2_target, gamma=1.1, loss_dB=0.2)
+    delivery_fiber = FiberSegment(
+        length=3.0,
+        beta2=beta2_target,
+        gamma=1.6,
+        loss_dB=passive_loss_dB * 0.4,
+        steps=1,
+    )
+    stretcher_fiber = FiberSegment(
+        length=1.2,
+        beta2=-beta2_target * 0.8,
+        gamma=1.0,
+        loss_dB=0.18,
+        steps=1,
+    )
 
     segments: List[ElementType] = [nalm, delivery_fiber, LumpedLoss(passive_loss_dB * 0.3), stretcher_fiber]
 
@@ -463,6 +547,11 @@ def build_default_nalm_laser(
         segments=segments,
         cfbgs=cfbgs,
         output_coupling=output_coupling,
+        target_spectral_fwhm_nm=cfbg_fwhm_nm,
+        shape_enforcement=1.0,
+        temporal_envelope_sigma_ps=2.0,
+        energy_relaxation=0.2,
+        tbp_factor=0.62,
     )
     return laser, seed_field
 
