@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+<rect x="70" y="70.0" width="710" height="450.0" fill="none" stroke="#444" stroke-width="1" />
+<line x1="70.0" y1="520.0" x2="70.0" y2="526.0" stroke="#333" />
+<text x="70.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">8.00</text>
+<line x1="247.5" y1="520.0" x2="247.5" y2="526.0" stroke="#333" />
+<text x="247.5" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">12.00</text>
+<line x1="425.0" y1="520.0" x2="425.0" y2="526.0" stroke="#333" />
+<text x="425.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">16.00</text>
+<line x1="602.5" y1="520.0" x2="602.5" y2="526.0" stroke="#333" />
+<text x="602.5" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">20.00</text>
+<line x1="780.0" y1="520.0" x2="780.0" y2="526.0" stroke="#333" />
+<text x="780.0" y="542.0" font-family="sans-serif" font-size="12" text-anchor="middle">24.00</text>
+<line x1="64" y1="520.0" x2="70" y2="520.0" stroke="#333" />
+<text x="60" y="524.0" font-family="sans-serif" font-size="12" text-anchor="end">1.2e+10</text>
+<line x1="64" y1="407.4999999999998" x2="70" y2="407.4999999999998" stroke="#333" />
+<text x="60" y="411.4999999999998" font-family="sans-serif" font-size="12" text-anchor="end">1.2e+10</text>
+<line x1="64" y1="294.9999999999996" x2="70" y2="294.9999999999996" stroke="#333" />
+<text x="60" y="298.9999999999996" font-family="sans-serif" font-size="12" text-anchor="end">1.2e+10</text>
+<line x1="64" y1="182.50000000000023" x2="70" y2="182.50000000000023" stroke="#333" />
+<text x="60" y="186.50000000000023" font-family="sans-serif" font-size="12" text-anchor="end">1.3e+10</text>
+<line x1="64" y1="70.0" x2="70" y2="70.0" stroke="#333" />
+<text x="60" y="74.0" font-family="sans-serif" font-size="12" text-anchor="end">1.3e+10</text>
+<text x="425.0" y="560.0" font-family="sans-serif" font-size="14" text-anchor="middle">CFBG FWHM (nm)</text>
+<text x="20" y="295.0" font-family="sans-serif" font-size="14" text-anchor="middle" transform="rotate(-90 20,295.0)">Average output power (arb.)</text>
+<text x="425.0" y="64.0" font-family="sans-serif" font-size="15" text-anchor="middle">CFBG bandwidth optimisation</text>
+<polyline points="70.00,520.00 425.00,143.41 780.00,70.00" fill="none" stroke="#1f77b4" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" />
+</svg>
