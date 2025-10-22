@@ -26,13 +26,15 @@ class SimulationHistoryEntry:
 
 @dataclass
 class SimulationResult:
-    """Container for the time-domain traces and metrics returned by ``run``."""
+    """Container for the time-domain traces and metrics returned by a simulation."""
 
     field_history: np.ndarray
     output_history: np.ndarray
     history: List[SimulationHistoryEntry]
+    stored_round_trips: np.ndarray
     time_axis: np.ndarray
     frequency_axis: np.ndarray
+    mode_locked: Optional[bool]
 
 
 class NALMFiberLaserSimulation:
@@ -140,6 +142,7 @@ class NALMFiberLaserSimulation:
         field = self._initial_field(seed)
         stored_fields = []
         stored_outputs = []
+        stored_round_trips = []
         history: List[SimulationHistoryEntry] = []
 
         dt = self.dt
@@ -179,6 +182,7 @@ class NALMFiberLaserSimulation:
             if round_trip % self.store_every == 0 or round_trip == num_round_trips - 1:
                 stored_fields.append(field.copy())
                 stored_outputs.append(output_field.copy())
+                stored_round_trips.append(round_trip)
 
         field_history = np.stack(stored_fields, axis=0)
         output_history = np.stack(stored_outputs, axis=0)
@@ -187,11 +191,119 @@ class NALMFiberLaserSimulation:
             field_history=field_history,
             output_history=output_history,
             history=history,
+            stored_round_trips=np.array(stored_round_trips, dtype=int),
             time_axis=self.time_axis,
             frequency_axis=self.frequency_axis,
+            mode_locked=None,
         )
 
     def spectrum(self, field: np.ndarray) -> np.ndarray:
         """Return the power spectral density of ``field``."""
 
         return np.abs(np.fft.fftshift(np.fft.fft(field))) ** 2
+
+    def run_until_mode_locked(
+        self,
+        max_round_trips: int,
+        *,
+        seed: Optional[int] = None,
+        pump_bias: float = 0.0,
+        min_round_trips: int = 100,
+        energy_window: int = 50,
+        relative_tolerance: float = 5e-3,
+    ) -> SimulationResult:
+        """Run the simulation until the intracavity energy converges.
+
+        The method keeps iterating the cavity map until the relative standard
+        deviation of the intracavity energy over the latest ``energy_window``
+        round-trips falls below ``relative_tolerance``.  If convergence is not
+        achieved before ``max_round_trips`` iterations, the method returns the
+        full history and flags the run as not mode-locked.
+        """
+
+        if energy_window <= 1:
+            raise ValueError("energy_window must be greater than 1 to assess convergence")
+
+        field = self._initial_field(seed)
+        stored_fields: List[np.ndarray] = []
+        stored_outputs: List[np.ndarray] = []
+        stored_round_trips: List[int] = []
+        history: List[SimulationHistoryEntry] = []
+
+        dt = self.dt
+        sqrt_transmission = np.sqrt(self.output_coupling)
+        sqrt_reflection = np.sqrt(1.0 - self.output_coupling)
+
+        locked = False
+
+        for round_trip in range(max_round_trips):
+            field = self.gain.apply(field, dt, extra_bias=pump_bias)
+            gain_value = self.gain.last_gain
+
+            field = self.main_fiber.propagate(field, dt)
+            if self.spectral_filter is not None:
+                field = self.spectral_filter.apply(field, dt)
+
+            field, nalm_state = self.nalm.apply(field, dt)
+
+            output_field = sqrt_transmission * field
+            field = sqrt_reflection * field
+
+            intracavity_energy = pulse_energy(field, dt)
+            output_energy = pulse_energy(output_field, dt)
+
+            history.append(
+                SimulationHistoryEntry(
+                    round_trip=round_trip,
+                    intracavity_energy=intracavity_energy,
+                    output_energy=output_energy,
+                    nalm_transmission=nalm_state.transmission,
+                    cw_energy=nalm_state.cw_energy,
+                    ccw_energy=nalm_state.ccw_energy,
+                    cw_phase_shift=nalm_state.cw_phase_shift,
+                    ccw_phase_shift=nalm_state.ccw_phase_shift,
+                    gain=gain_value,
+                )
+            )
+
+            if round_trip % self.store_every == 0 or round_trip == max_round_trips - 1:
+                stored_fields.append(field.copy())
+                stored_outputs.append(output_field.copy())
+                stored_round_trips.append(round_trip)
+
+            if round_trip + 1 < min_round_trips:
+                continue
+
+            if len(history) < energy_window:
+                continue
+
+            recent_energies = np.array(
+                [entry.intracavity_energy for entry in history[-energy_window:]],
+                dtype=float,
+            )
+
+            mean_energy = float(np.mean(recent_energies))
+            if mean_energy <= 0.0:
+                continue
+
+            relative_std = float(np.std(recent_energies) / mean_energy)
+            if relative_std < relative_tolerance:
+                locked = True
+                if not stored_round_trips or stored_round_trips[-1] != round_trip:
+                    stored_fields.append(field.copy())
+                    stored_outputs.append(output_field.copy())
+                    stored_round_trips.append(round_trip)
+                break
+
+        field_history = np.stack(stored_fields, axis=0)
+        output_history = np.stack(stored_outputs, axis=0)
+
+        return SimulationResult(
+            field_history=field_history,
+            output_history=output_history,
+            history=history,
+            stored_round_trips=np.array(stored_round_trips, dtype=int),
+            time_axis=self.time_axis,
+            frequency_axis=self.frequency_axis,
+            mode_locked=locked,
+        )
