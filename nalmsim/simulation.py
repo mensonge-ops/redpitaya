@@ -23,6 +23,33 @@ class SimulationHistoryEntry:
     ccw_phase_shift: float
     gain: float
     pump_bias: float
+    peak_power: float
+    pulse_duration: float
+    spectral_width: float
+    time_bandwidth_product: float
+    pulse_contrast: float
+
+
+@dataclass
+class ModeLockingReport:
+    """Summary of the mode-lock assessment for the latest simulation."""
+
+    energy_window: int
+    energy_tolerance: float
+    contrast_threshold: float
+    tbp_threshold: float
+    peak_power_threshold: float
+    mean_energy: float
+    energy_std: float
+    mean_peak_power: float
+    mean_pulse_duration: float
+    mean_spectral_width: float
+    mean_time_bandwidth_product: float
+    mean_contrast: float
+    met_energy_stability: bool
+    met_contrast: bool
+    met_tbp: bool
+    met_peak_power: bool
 
 
 @dataclass
@@ -36,6 +63,7 @@ class SimulationResult:
     time_axis: np.ndarray
     frequency_axis: np.ndarray
     mode_locked: Optional[bool]
+    mode_lock_report: Optional[ModeLockingReport]
 
 
 class NALMFiberLaserSimulation:
@@ -159,6 +187,130 @@ class NALMFiberLaserSimulation:
         new_bias = float(np.clip(new_bias, pump_min, pump_max))
         return new_bias, blended_error
 
+    def _pulse_diagnostics(self, field: np.ndarray) -> tuple[float, float, float, float, float]:
+        """Return key pulse metrics derived from the intracavity field.
+
+        The computed quantities follow the standard definitions commonly used
+        to identify mode-locking in passively mode-locked lasers (see, e.g.,
+        Haus, *IEEE J. Sel. Top. Quantum Electron.* **2**, 1996; Dudley & Taylor,
+        *Nat. Photonics* **3**, 2009).  They include:
+
+        - peak power,
+        - RMS pulse duration,
+        - RMS spectral width (in Hz),
+        - time-bandwidth product (TBP),
+        - pulse contrast (peak power over average power).
+        """
+
+        intensity = np.abs(field) ** 2
+        peak_power = float(np.max(intensity))
+        dt = self.dt
+        energy = float(np.sum(intensity) * dt)
+
+        if not np.isfinite(energy) or energy <= 0.0:
+            return peak_power, 0.0, 0.0, 0.0, 0.0
+
+        mean_power = energy / (self.time_window)
+
+        shift = (self.num_samples // 2) - int(np.argmax(intensity))
+        intensity_centered = np.roll(intensity, shift)
+        field_centered = np.roll(field, shift)
+
+        weights_time = intensity_centered * dt / energy
+        mean_time = float(np.sum(self.time_axis * weights_time))
+        variance_time = float(np.sum((self.time_axis - mean_time) ** 2 * weights_time))
+        variance_time = max(variance_time, 0.0)
+        rms_duration = float(np.sqrt(variance_time))
+
+        spectrum = np.fft.fftshift(np.abs(np.fft.fft(field_centered)) ** 2)
+        freq_axis = np.fft.fftshift(self.frequency_axis)
+        domega = float(np.abs(freq_axis[1] - freq_axis[0])) if freq_axis.size > 1 else 0.0
+        spectral_energy = float(np.sum(spectrum) * domega)
+
+        if not np.isfinite(spectral_energy) or spectral_energy <= 0.0:
+            rms_bandwidth_hz = 0.0
+        else:
+            weights_freq = spectrum * domega / spectral_energy
+            mean_freq = float(np.sum(freq_axis * weights_freq))
+            variance_freq = float(np.sum((freq_axis - mean_freq) ** 2 * weights_freq))
+            variance_freq = max(variance_freq, 0.0)
+            rms_bandwidth_hz = float(np.sqrt(variance_freq)) / (2.0 * np.pi)
+
+        tbp = rms_duration * rms_bandwidth_hz
+        contrast = peak_power / (mean_power + 1e-18)
+
+        return peak_power, rms_duration, rms_bandwidth_hz, tbp, contrast
+
+    @staticmethod
+    def _aggregate(values: List[float], *, reducer) -> float:
+        array = np.array(values, dtype=float)
+        if array.size == 0:
+            return 0.0
+        return float(reducer(array))
+
+    def _assess_mode_locking(
+        self,
+        history: List[SimulationHistoryEntry],
+        *,
+        energy_window: int,
+        energy_tolerance: float,
+        contrast_threshold: float,
+        tbp_threshold: float,
+        peak_power_threshold: float,
+    ) -> Optional[ModeLockingReport]:
+        if len(history) < energy_window:
+            return None
+
+        window = history[-energy_window:]
+        energies = np.array([entry.intracavity_energy for entry in window], dtype=float)
+        if np.any(~np.isfinite(energies)):
+            return None
+
+        mean_energy = float(np.mean(energies))
+        if mean_energy <= 0.0:
+            return None
+
+        energy_std = float(np.std(energies) / mean_energy)
+
+        peak_powers = [entry.peak_power for entry in window]
+        durations = [entry.pulse_duration for entry in window]
+        spectral_widths = [entry.spectral_width for entry in window]
+        tbps = [entry.time_bandwidth_product for entry in window]
+        contrasts = [entry.pulse_contrast for entry in window]
+
+        mean_peak_power = self._aggregate(peak_powers, reducer=np.mean)
+        min_peak_power = self._aggregate(peak_powers, reducer=np.min)
+        mean_duration = self._aggregate(durations, reducer=np.mean)
+        mean_spectral_width = self._aggregate(spectral_widths, reducer=np.mean)
+        max_tbp = self._aggregate(tbps, reducer=np.max)
+        mean_tbp = self._aggregate(tbps, reducer=np.mean)
+        min_contrast = self._aggregate(contrasts, reducer=np.min)
+        mean_contrast = self._aggregate(contrasts, reducer=np.mean)
+
+        met_energy = energy_std < energy_tolerance
+        met_contrast = min_contrast > contrast_threshold
+        met_tbp = max_tbp < tbp_threshold
+        met_peak = min_peak_power > peak_power_threshold
+
+        return ModeLockingReport(
+            energy_window=energy_window,
+            energy_tolerance=energy_tolerance,
+            contrast_threshold=contrast_threshold,
+            tbp_threshold=tbp_threshold,
+            peak_power_threshold=peak_power_threshold,
+            mean_energy=mean_energy,
+            energy_std=energy_std,
+            mean_peak_power=mean_peak_power,
+            mean_pulse_duration=mean_duration,
+            mean_spectral_width=mean_spectral_width,
+            mean_time_bandwidth_product=mean_tbp,
+            mean_contrast=mean_contrast,
+            met_energy_stability=met_energy,
+            met_contrast=met_contrast,
+            met_tbp=met_tbp,
+            met_peak_power=met_peak,
+        )
+
     def _initial_field(self, seed: Optional[int]) -> np.ndarray:
         rng = np.random.default_rng(seed)
         noise_amplitude = 1e-6
@@ -219,6 +371,7 @@ class NALMFiberLaserSimulation:
 
             intracavity_energy = pulse_energy(field, dt)
             output_energy = pulse_energy(output_field, dt)
+            peak_power, pulse_duration, spectral_width, tbp, contrast = self._pulse_diagnostics(field)
 
             history.append(
                 SimulationHistoryEntry(
@@ -232,6 +385,11 @@ class NALMFiberLaserSimulation:
                     ccw_phase_shift=nalm_state.ccw_phase_shift,
                     gain=gain_value,
                     pump_bias=pump_bias_current,
+                    peak_power=peak_power,
+                    pulse_duration=pulse_duration,
+                    spectral_width=spectral_width,
+                    time_bandwidth_product=tbp,
+                    pulse_contrast=contrast,
                 )
             )
 
@@ -263,6 +421,7 @@ class NALMFiberLaserSimulation:
             time_axis=self.time_axis,
             frequency_axis=self.frequency_axis,
             mode_locked=None,
+            mode_lock_report=None,
         )
 
     def spectrum(self, field: np.ndarray) -> np.ndarray:
@@ -285,16 +444,29 @@ class NALMFiberLaserSimulation:
         pump_min: float = -0.5,
         pump_max: float = 2.0,
         pump_smoothing: float = 0.75,
+        contrast_threshold: float = 30.0,
+        tbp_threshold: float = 0.8,
+        peak_power_threshold: float = 400.0,
     ) -> SimulationResult:
         """Run the simulation until the intracavity energy converges.
 
         The method keeps iterating the cavity map until the relative standard
         deviation of the intracavity energy over the latest ``energy_window``
-        round-trips falls below ``relative_tolerance``.  If convergence is not
-        achieved before ``max_round_trips`` iterations, the method returns the
-        full history and flags the run as not mode-locked.  With
-        ``adaptive_pump`` enabled (the default), the pump bias is gently
-        adjusted every round-trip to steer the energy towards ``target_energy``.
+        round-trips falls below ``relative_tolerance`` *and* the additional
+        pulse quality criteria from ultrafast laser literature are satisfied:
+
+        - the pulse contrast (peak power over average power) must exceed
+          ``contrast_threshold`` to ensure a well-defined pulse train,
+        - the time-bandwidth product must remain below ``tbp_threshold`` to
+          indicate transform-limited behaviour,
+        - the peak power must exceed ``peak_power_threshold`` to avoid spurious
+          noise-like pulses.
+
+        If convergence is not achieved before ``max_round_trips`` iterations,
+        the method returns the full history and flags the run as not
+        mode-locked.  With ``adaptive_pump`` enabled (the default), the pump
+        bias is gently adjusted every round-trip to steer the energy towards
+        ``target_energy``.
         """
 
         if energy_window <= 1:
@@ -311,6 +483,7 @@ class NALMFiberLaserSimulation:
         sqrt_reflection = np.sqrt(1.0 - self.output_coupling)
 
         locked = False
+        mode_lock_report: Optional[ModeLockingReport] = None
 
         target_energy_value = self._resolve_target_energy(target_energy)
         smoothing = float(np.clip(pump_smoothing, 0.0, 0.999))
@@ -336,6 +509,8 @@ class NALMFiberLaserSimulation:
             intracavity_energy = pulse_energy(field, dt)
             output_energy = pulse_energy(output_field, dt)
 
+            peak_power, pulse_duration, spectral_width, tbp, contrast = self._pulse_diagnostics(field)
+
             history.append(
                 SimulationHistoryEntry(
                     round_trip=round_trip,
@@ -348,6 +523,11 @@ class NALMFiberLaserSimulation:
                     ccw_phase_shift=nalm_state.ccw_phase_shift,
                     gain=gain_value,
                     pump_bias=pump_bias_current,
+                    peak_power=peak_power,
+                    pulse_duration=pulse_duration,
+                    spectral_width=spectral_width,
+                    time_bandwidth_product=tbp,
+                    pulse_contrast=contrast,
                 )
             )
 
@@ -371,20 +551,24 @@ class NALMFiberLaserSimulation:
             if round_trip + 1 < min_round_trips:
                 continue
 
-            if len(history) < energy_window:
-                continue
-
-            recent_energies = np.array(
-                [entry.intracavity_energy for entry in history[-energy_window:]],
-                dtype=float,
+            report = self._assess_mode_locking(
+                history,
+                energy_window=energy_window,
+                energy_tolerance=relative_tolerance,
+                contrast_threshold=contrast_threshold,
+                tbp_threshold=tbp_threshold,
+                peak_power_threshold=peak_power_threshold,
             )
-
-            mean_energy = float(np.mean(recent_energies))
-            if mean_energy <= 0.0:
+            if report is None:
                 continue
 
-            relative_std = float(np.std(recent_energies) / mean_energy)
-            if relative_std < relative_tolerance:
+            mode_lock_report = report
+            if (
+                report.met_energy_stability
+                and report.met_contrast
+                and report.met_tbp
+                and report.met_peak_power
+            ):
                 locked = True
                 if not stored_round_trips or stored_round_trips[-1] != round_trip:
                     stored_fields.append(field.copy())
@@ -403,4 +587,5 @@ class NALMFiberLaserSimulation:
             time_axis=self.time_axis,
             frequency_axis=self.frequency_axis,
             mode_locked=locked,
+            mode_lock_report=mode_lock_report,
         )

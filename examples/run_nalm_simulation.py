@@ -42,6 +42,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--lock-window", type=int, default=50,
                         help="Number of recent round-trips considered when assessing"
                              " mode-locking convergence")
+    parser.add_argument("--contrast-threshold", type=float, default=30.0,
+                        help="Minimum peak-to-average power ratio required for"
+                             " the mode-lock detector")
+    parser.add_argument("--tbp-threshold", type=float, default=0.8,
+                        help="Maximum RMS time-bandwidth product tolerated when"
+                             " declaring mode-locking")
+    parser.add_argument("--peak-power-threshold", type=float, default=400.0,
+                        help="Minimum intracavity peak power (W) considered a"
+                             " clean pulse")
     parser.add_argument("--min-round-trips", type=int, default=100,
                         help="Minimum number of round-trips to simulate before checking"
                              " for mode-locking convergence")
@@ -83,12 +92,33 @@ def summarise(result):
     print(f"  CW/CCW energies    : {last.cw_energy:.3e} / {last.ccw_energy:.3e} J")
     print(f"  Gain exponent      : {last.gain:.3f}")
     print(f"  Pump bias          : {last.pump_bias:.3f}")
+    print(f"  Peak power         : {last.peak_power:.3e} W")
+    print(f"  Pulse duration     : {last.pulse_duration * 1e12:.3f} ps (RMS)")
+    print(f"  Spectral width     : {last.spectral_width * 1e-12:.3f} THz (RMS)")
+    print(f"  Time-bandwidth prod: {last.time_bandwidth_product:.3f}")
+    print(f"  Pulse contrast     : {last.pulse_contrast:.1f}")
     if result.mode_locked is True:
         print("  Mode-locking       : converged")
     elif result.mode_locked is False:
         print("  Mode-locking       : not converged (max round-trips reached)")
     else:
         print("  Mode-locking       : not evaluated")
+
+    if result.mode_lock_report is not None:
+        report = result.mode_lock_report
+        status = {
+            True: "OK",
+            False: "not met",
+        }
+        print("\nMode-lock assessment window:")
+        print(f"  Energy stability   : {report.energy_std:.3e} (limit {report.energy_tolerance:.3e})"
+              f" -> {status[report.met_energy_stability]}")
+        print(f"  Peak contrast      : {report.mean_contrast:.2f} (limit {report.contrast_threshold:.2f})"
+              f" -> {status[report.met_contrast]}")
+        print(f"  Time-bandwidth     : {report.mean_time_bandwidth_product:.3f}"
+              f" (limit {report.tbp_threshold:.3f}) -> {status[report.met_tbp]}")
+        print(f"  Peak power         : {report.mean_peak_power:.3e} W"
+              f" (limit {report.peak_power_threshold:.3e} W) -> {status[report.met_peak_power]}")
 
 
 def plot_results(result):
@@ -186,7 +216,17 @@ def plot_results(result):
     ax_spec_evo.set_title("Spectrum evolution")
     fig.colorbar(im_spec, ax=ax_spec_evo, label="Spectral density (a.u.)")
 
-    fig.tight_layout()
+    if result.mode_lock_report is not None:
+        report = result.mode_lock_report
+        status = "Mode-locked" if result.mode_locked else "Not mode-locked"
+        fig.suptitle(
+            f"{status}: σ_E/⟨E⟩={report.energy_std:.2e}, "
+            f"contrast={report.mean_contrast:.1f}, TBP={report.mean_time_bandwidth_product:.3f}",
+            fontsize=12,
+        )
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+    else:
+        fig.tight_layout()
 
     if result.mode_locked and result.field_history.shape[0] >= 2:
         num_traces = min(6, result.field_history.shape[0])
@@ -207,7 +247,15 @@ def plot_results(result):
         ax_seq.set_title("Stable pulse sequence after mode-locking")
         ax_seq.legend(loc="upper right", frameon=False)
         ax_seq.set_ylim(bottom=-0.05 * separation)
-        fig_seq.tight_layout()
+        if result.mode_lock_report is not None:
+            report = result.mode_lock_report
+            fig_seq.suptitle(
+                f"Stable pulse sequence (contrast {report.mean_contrast:.1f}, TBP {report.mean_time_bandwidth_product:.3f})",
+                fontsize=11,
+            )
+            fig_seq.tight_layout(rect=[0, 0, 1, 0.9])
+        else:
+            fig_seq.tight_layout()
 
     plt.show()
 
@@ -236,6 +284,9 @@ def main(argv: Optional[list[str]] = None) -> None:
             min_round_trips=args.min_round_trips,
             energy_window=args.lock_window,
             relative_tolerance=args.lock_tolerance,
+            contrast_threshold=args.contrast_threshold,
+            tbp_threshold=args.tbp_threshold,
+            peak_power_threshold=args.peak_power_threshold,
             **pump_kwargs,
         )
     else:
