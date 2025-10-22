@@ -11,19 +11,31 @@ import numpy as np
 from nalmsim import NALMFiberLaserSimulation
 
 
+# Default values used when parsing arguments so the example can be tuned in one place.
+DEFAULT_CONFIGURATION = {
+    "round_trips": 500,
+    "seed": 1,
+    "store_every": 10,
+    "mode_lock": True,
+    "no_plot": True,
+}
+
+
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--round-trips", type=int, default=400,
+    parser.add_argument("--round-trips", type=int, default=DEFAULT_CONFIGURATION["round_trips"],
                         help="Number of cavity round-trips to simulate (or the maximum"
                              " to allow when searching for mode-locking)")
-    parser.add_argument("--seed", type=int, default=None,
+    parser.add_argument("--seed", type=int, default=DEFAULT_CONFIGURATION["seed"],
                         help="Seed for the random initial field")
     parser.add_argument("--pump-bias", type=float, default=0.0,
                         help="Additional bias applied to the gain medium")
-    parser.add_argument("--store-every", type=int, default=10,
+    parser.add_argument("--store-every", type=int, default=DEFAULT_CONFIGURATION["store_every"],
                         help="Store the intracavity field every N round-trips")
-    parser.add_argument("--mode-lock", action="store_true",
+    parser.add_argument("--mode-lock", dest="mode_lock", action="store_true",
                         help="Continue iterating until the intracavity energy converges")
+    parser.add_argument("--no-mode-lock", dest="mode_lock", action="store_false",
+                        help="Disable the convergence search and run a fixed number of round-trips")
     parser.add_argument("--lock-tolerance", type=float, default=5e-3,
                         help="Relative standard deviation threshold used to declare"
                              " mode-locking when --mode-lock is enabled")
@@ -33,13 +45,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--min-round-trips", type=int, default=100,
                         help="Minimum number of round-trips to simulate before checking"
                              " for mode-locking convergence")
-    parser.add_argument("--no-plot", action="store_true",
+    parser.add_argument("--plot", dest="no_plot", action="store_false",
+                        help="Enable plotting of the temporal and spectral evolution")
+    parser.add_argument("--no-plot", dest="no_plot", action="store_true",
                         help="Disable plotting of the temporal and spectral evolution")
     parser.add_argument("--adaptive-pump", dest="adaptive_pump", action="store_true",
                         help="Enable adaptive pump control to help reach mode-locking")
     parser.add_argument("--no-adaptive-pump", dest="adaptive_pump", action="store_false",
                         help="Disable adaptive pump control")
-    parser.set_defaults(adaptive_pump=None)
+    parser.set_defaults(
+        adaptive_pump=None,
+        mode_lock=DEFAULT_CONFIGURATION["mode_lock"],
+        no_plot=DEFAULT_CONFIGURATION["no_plot"],
+    )
     parser.add_argument("--target-energy", type=float, default=None,
                         help="Desired intracavity energy level when adaptive pumping is enabled")
     parser.add_argument("--pump-step", type=float, default=0.1,

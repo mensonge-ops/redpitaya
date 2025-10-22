@@ -356,6 +356,18 @@ class NALMFiberLaserSimulation:
                 stored_outputs.append(output_field.copy())
                 stored_round_trips.append(round_trip)
 
+            pump_bias_current, error_state = self._apply_pump_control(
+                pump_bias_current,
+                intracavity_energy,
+                adaptive_pump=adaptive_pump,
+                target_energy=target_energy_value,
+                pump_adjustment=pump_adjustment,
+                pump_min=pump_minimum,
+                pump_max=pump_maximum,
+                smoothing=smoothing,
+                error_state=error_state,
+            )
+
             if round_trip + 1 < min_round_trips:
                 continue
 
@@ -379,18 +391,6 @@ class NALMFiberLaserSimulation:
                     stored_outputs.append(output_field.copy())
                     stored_round_trips.append(round_trip)
                 break
-
-            pump_bias_current, error_state = self._apply_pump_control(
-                pump_bias_current,
-                intracavity_energy,
-                adaptive_pump=adaptive_pump,
-                target_energy=target_energy_value,
-                pump_adjustment=pump_adjustment,
-                pump_min=pump_minimum,
-                pump_max=pump_maximum,
-                smoothing=smoothing,
-                error_state=error_state,
-            )
 
         field_history = np.stack(stored_fields, axis=0)
         output_history = np.stack(stored_outputs, axis=0)
