@@ -177,7 +177,15 @@ class GainFiber(FiberSegment):
     gain_clamp: Optional[tuple[float, float]] = None
 
     def propagate(self, pulse: Pulse) -> Pulse:
-        base = super().propagate(pulse)
+        # NOTE: We deliberately call :meth:`FiberSegment.propagate` directly instead
+        # of ``super().propagate``.  Some execution environments (notably when the
+        # module is reloaded between stages of the multi-step workflow) can end up
+        # with multiple ``GainFiber`` class objects that share the same name.  The
+        # built-in :func:`super` rejects this situation because the ``self`` instance
+        # is not recognised as deriving from the most recently defined class
+        # object.  Explicitly delegating to ``FiberSegment`` avoids the ambiguity
+        # while preserving the intended propagation behaviour.
+        base = FiberSegment.propagate(self, pulse)
         energy = base.energy()
         if self.saturation_energy <= 0.0:
             net_gain = self.small_signal_gain
