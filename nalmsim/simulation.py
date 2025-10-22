@@ -22,6 +22,7 @@ class SimulationHistoryEntry:
     cw_phase_shift: float
     ccw_phase_shift: float
     gain: float
+    pump_bias: float
 
 
 @dataclass
@@ -123,6 +124,41 @@ class NALMFiberLaserSimulation:
         self.output_coupling = output_coupling
         self.store_every = max(store_every, 1)
 
+    def _resolve_target_energy(self, target_energy: Optional[float]) -> float:
+        if target_energy is not None and target_energy > 0.0:
+            return float(target_energy)
+
+        saturation_energy = getattr(self.gain, "saturation_energy", 0.0)
+        if saturation_energy and saturation_energy > 0.0:
+            return 0.6 * float(saturation_energy)
+
+        return 1e-9
+
+    @staticmethod
+    def _apply_pump_control(
+        pump_bias: float,
+        intracavity_energy: float,
+        *,
+        adaptive_pump: bool,
+        target_energy: float,
+        pump_adjustment: float,
+        pump_min: float,
+        pump_max: float,
+        smoothing: float,
+        error_state: float,
+    ) -> tuple[float, float]:
+        if not adaptive_pump:
+            return pump_bias, error_state
+
+        if target_energy <= 0.0 or pump_adjustment <= 0.0:
+            return pump_bias, error_state
+
+        error = (intracavity_energy - target_energy) / target_energy
+        blended_error = (1.0 - smoothing) * error + smoothing * error_state
+        new_bias = pump_bias - pump_adjustment * blended_error
+        new_bias = float(np.clip(new_bias, pump_min, pump_max))
+        return new_bias, blended_error
+
     def _initial_field(self, seed: Optional[int]) -> np.ndarray:
         rng = np.random.default_rng(seed)
         noise_amplitude = 1e-6
@@ -136,8 +172,19 @@ class NALMFiberLaserSimulation:
         *,
         seed: Optional[int] = None,
         pump_bias: float = 0.0,
+        adaptive_pump: bool = False,
+        target_energy: Optional[float] = None,
+        pump_adjustment: float = 0.1,
+        pump_min: float = -0.5,
+        pump_max: float = 2.0,
+        pump_smoothing: float = 0.75,
     ) -> SimulationResult:
-        """Run the cavity simulation for ``num_round_trips`` iterations."""
+        """Run the cavity simulation for ``num_round_trips`` iterations.
+
+        When ``adaptive_pump`` is enabled, a simple feedback controller adjusts
+        the effective pump bias after each round-trip to drive the intracavity
+        energy towards ``target_energy``.
+        """
 
         field = self._initial_field(seed)
         stored_fields = []
@@ -149,8 +196,16 @@ class NALMFiberLaserSimulation:
         sqrt_transmission = np.sqrt(self.output_coupling)
         sqrt_reflection = np.sqrt(1.0 - self.output_coupling)
 
+        target_energy_value = self._resolve_target_energy(target_energy)
+        smoothing = float(np.clip(pump_smoothing, 0.0, 0.999))
+        pump_minimum, pump_maximum = sorted((float(pump_min), float(pump_max)))
+        if pump_maximum == pump_minimum:
+            pump_maximum = pump_minimum + 1e-9
+        pump_bias_current = float(pump_bias)
+        error_state = 0.0
+
         for round_trip in range(num_round_trips):
-            field = self.gain.apply(field, dt, extra_bias=pump_bias)
+            field = self.gain.apply(field, dt, extra_bias=pump_bias_current)
             gain_value = self.gain.last_gain
 
             field = self.main_fiber.propagate(field, dt)
@@ -176,6 +231,7 @@ class NALMFiberLaserSimulation:
                     cw_phase_shift=nalm_state.cw_phase_shift,
                     ccw_phase_shift=nalm_state.ccw_phase_shift,
                     gain=gain_value,
+                    pump_bias=pump_bias_current,
                 )
             )
 
@@ -183,6 +239,18 @@ class NALMFiberLaserSimulation:
                 stored_fields.append(field.copy())
                 stored_outputs.append(output_field.copy())
                 stored_round_trips.append(round_trip)
+
+            pump_bias_current, error_state = self._apply_pump_control(
+                pump_bias_current,
+                intracavity_energy,
+                adaptive_pump=adaptive_pump,
+                target_energy=target_energy_value,
+                pump_adjustment=pump_adjustment,
+                pump_min=pump_minimum,
+                pump_max=pump_maximum,
+                smoothing=smoothing,
+                error_state=error_state,
+            )
 
         field_history = np.stack(stored_fields, axis=0)
         output_history = np.stack(stored_outputs, axis=0)
@@ -211,6 +279,12 @@ class NALMFiberLaserSimulation:
         min_round_trips: int = 100,
         energy_window: int = 50,
         relative_tolerance: float = 5e-3,
+        adaptive_pump: bool = True,
+        target_energy: Optional[float] = None,
+        pump_adjustment: float = 0.1,
+        pump_min: float = -0.5,
+        pump_max: float = 2.0,
+        pump_smoothing: float = 0.75,
     ) -> SimulationResult:
         """Run the simulation until the intracavity energy converges.
 
@@ -218,7 +292,9 @@ class NALMFiberLaserSimulation:
         deviation of the intracavity energy over the latest ``energy_window``
         round-trips falls below ``relative_tolerance``.  If convergence is not
         achieved before ``max_round_trips`` iterations, the method returns the
-        full history and flags the run as not mode-locked.
+        full history and flags the run as not mode-locked.  With
+        ``adaptive_pump`` enabled (the default), the pump bias is gently
+        adjusted every round-trip to steer the energy towards ``target_energy``.
         """
 
         if energy_window <= 1:
@@ -236,8 +312,16 @@ class NALMFiberLaserSimulation:
 
         locked = False
 
+        target_energy_value = self._resolve_target_energy(target_energy)
+        smoothing = float(np.clip(pump_smoothing, 0.0, 0.999))
+        pump_minimum, pump_maximum = sorted((float(pump_min), float(pump_max)))
+        if pump_maximum == pump_minimum:
+            pump_maximum = pump_minimum + 1e-9
+        pump_bias_current = float(pump_bias)
+        error_state = 0.0
+
         for round_trip in range(max_round_trips):
-            field = self.gain.apply(field, dt, extra_bias=pump_bias)
+            field = self.gain.apply(field, dt, extra_bias=pump_bias_current)
             gain_value = self.gain.last_gain
 
             field = self.main_fiber.propagate(field, dt)
@@ -263,6 +347,7 @@ class NALMFiberLaserSimulation:
                     cw_phase_shift=nalm_state.cw_phase_shift,
                     ccw_phase_shift=nalm_state.ccw_phase_shift,
                     gain=gain_value,
+                    pump_bias=pump_bias_current,
                 )
             )
 
@@ -294,6 +379,18 @@ class NALMFiberLaserSimulation:
                     stored_outputs.append(output_field.copy())
                     stored_round_trips.append(round_trip)
                 break
+
+            pump_bias_current, error_state = self._apply_pump_control(
+                pump_bias_current,
+                intracavity_energy,
+                adaptive_pump=adaptive_pump,
+                target_energy=target_energy_value,
+                pump_adjustment=pump_adjustment,
+                pump_min=pump_minimum,
+                pump_max=pump_maximum,
+                smoothing=smoothing,
+                error_state=error_state,
+            )
 
         field_history = np.stack(stored_fields, axis=0)
         output_history = np.stack(stored_outputs, axis=0)
