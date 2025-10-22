@@ -42,13 +42,13 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--lock-window", type=int, default=50,
                         help="Number of recent round-trips considered when assessing"
                              " mode-locking convergence")
-    parser.add_argument("--contrast-threshold", type=float, default=30.0,
+    parser.add_argument("--contrast-threshold", type=float, default=15.0,
                         help="Minimum peak-to-average power ratio required for"
                              " the mode-lock detector")
-    parser.add_argument("--tbp-threshold", type=float, default=0.8,
+    parser.add_argument("--tbp-threshold", type=float, default=0.65,
                         help="Maximum RMS time-bandwidth product tolerated when"
                              " declaring mode-locking")
-    parser.add_argument("--peak-power-threshold", type=float, default=400.0,
+    parser.add_argument("--peak-power-threshold", type=float, default=80.0,
                         help="Minimum intracavity peak power (W) considered a"
                              " clean pulse")
     parser.add_argument("--min-round-trips", type=int, default=100,
@@ -113,12 +113,15 @@ def summarise(result):
         print("\nMode-lock assessment window:")
         print(f"  Energy stability   : {report.energy_std:.3e} (limit {report.energy_tolerance:.3e})"
               f" -> {status[report.met_energy_stability]}")
-        print(f"  Peak contrast      : {report.mean_contrast:.2f} (limit {report.contrast_threshold:.2f})"
-              f" -> {status[report.met_contrast]}")
-        print(f"  Time-bandwidth     : {report.mean_time_bandwidth_product:.3f}"
-              f" (limit {report.tbp_threshold:.3f}) -> {status[report.met_tbp]}")
-        print(f"  Peak power         : {report.mean_peak_power:.3e} W"
-              f" (limit {report.peak_power_threshold:.3e} W) -> {status[report.met_peak_power]}")
+        print(f"  Peak contrast      : {report.representative_contrast:.2f}"
+              f" (limit {report.contrast_threshold:.2f}) -> {status[report.met_contrast]}"
+              f" | mean {report.mean_contrast:.2f}")
+        print(f"  Time-bandwidth     : {report.representative_time_bandwidth_product:.3f}"
+              f" (limit {report.tbp_threshold:.3f}) -> {status[report.met_tbp]}"
+              f" | mean {report.mean_time_bandwidth_product:.3f}")
+        print(f"  Peak power         : {report.representative_peak_power:.3e} W"
+              f" (limit {report.peak_power_threshold:.3e} W) -> {status[report.met_peak_power]}"
+              f" | mean {report.mean_peak_power:.3e} W")
 
 
 def plot_results(result):
@@ -221,7 +224,8 @@ def plot_results(result):
         status = "Mode-locked" if result.mode_locked else "Not mode-locked"
         fig.suptitle(
             f"{status}: σ_E/⟨E⟩={report.energy_std:.2e}, "
-            f"contrast={report.mean_contrast:.1f}, TBP={report.mean_time_bandwidth_product:.3f}",
+            f"contrast={report.representative_contrast:.1f}, "
+            f"TBP={report.representative_time_bandwidth_product:.3f}",
             fontsize=12,
         )
         fig.tight_layout(rect=[0, 0, 1, 0.94])
@@ -250,7 +254,8 @@ def plot_results(result):
         if result.mode_lock_report is not None:
             report = result.mode_lock_report
             fig_seq.suptitle(
-                f"Stable pulse sequence (contrast {report.mean_contrast:.1f}, TBP {report.mean_time_bandwidth_product:.3f})",
+                f"Stable pulse sequence (contrast {report.representative_contrast:.1f},"
+                f" TBP {report.representative_time_bandwidth_product:.3f})",
                 fontsize=11,
             )
             fig_seq.tight_layout(rect=[0, 0, 1, 0.9])

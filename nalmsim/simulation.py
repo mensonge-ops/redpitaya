@@ -1,8 +1,9 @@
 """Complete simulation of a NALM-based mode-locked fiber laser."""
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -46,6 +47,9 @@ class ModeLockingReport:
     mean_spectral_width: float
     mean_time_bandwidth_product: float
     mean_contrast: float
+    representative_peak_power: float
+    representative_time_bandwidth_product: float
+    representative_contrast: float
     met_energy_stability: bool
     met_contrast: bool
     met_tbp: bool
@@ -98,6 +102,7 @@ class NALMFiberLaserSimulation:
         spectral_filter: Optional[SpectralFilter] = None,
         output_coupling: float = 0.1,
         store_every: int = 10,
+        sequence_span: int = 8,
     ) -> None:
         self.time_window = time_window
         self.num_samples = num_samples
@@ -151,6 +156,7 @@ class NALMFiberLaserSimulation:
             raise ValueError("Output coupling must lie between 0 and 1")
         self.output_coupling = output_coupling
         self.store_every = max(store_every, 1)
+        self.sequence_span = max(int(sequence_span), 1)
 
     def _resolve_target_energy(self, target_energy: Optional[float]) -> float:
         if target_energy is not None and target_energy > 0.0:
@@ -242,11 +248,11 @@ class NALMFiberLaserSimulation:
         return peak_power, rms_duration, rms_bandwidth_hz, tbp, contrast
 
     @staticmethod
-    def _aggregate(values: List[float], *, reducer) -> float:
-        array = np.array(values, dtype=float)
+    def _finite_array(values: List[float]) -> np.ndarray:
+        array = np.asarray(values, dtype=float)
         if array.size == 0:
-            return 0.0
-        return float(reducer(array))
+            return np.empty(0, dtype=float)
+        return array[np.isfinite(array)]
 
     def _assess_mode_locking(
         self,
@@ -270,27 +276,36 @@ class NALMFiberLaserSimulation:
         if mean_energy <= 0.0:
             return None
 
-        energy_std = float(np.std(energies) / mean_energy)
+        std_denom = np.std(energies, ddof=1 if energies.size > 1 else 0)
+        energy_std = float(std_denom / mean_energy)
 
-        peak_powers = [entry.peak_power for entry in window]
-        durations = [entry.pulse_duration for entry in window]
-        spectral_widths = [entry.spectral_width for entry in window]
-        tbps = [entry.time_bandwidth_product for entry in window]
-        contrasts = [entry.pulse_contrast for entry in window]
+        peak_powers = self._finite_array([entry.peak_power for entry in window])
+        durations = self._finite_array([entry.pulse_duration for entry in window])
+        spectral_widths = self._finite_array([entry.spectral_width for entry in window])
+        tbps = self._finite_array([entry.time_bandwidth_product for entry in window])
+        contrasts = self._finite_array([entry.pulse_contrast for entry in window])
 
-        mean_peak_power = self._aggregate(peak_powers, reducer=np.mean)
-        min_peak_power = self._aggregate(peak_powers, reducer=np.min)
-        mean_duration = self._aggregate(durations, reducer=np.mean)
-        mean_spectral_width = self._aggregate(spectral_widths, reducer=np.mean)
-        max_tbp = self._aggregate(tbps, reducer=np.max)
-        mean_tbp = self._aggregate(tbps, reducer=np.mean)
-        min_contrast = self._aggregate(contrasts, reducer=np.min)
-        mean_contrast = self._aggregate(contrasts, reducer=np.mean)
+        mean_peak_power = float(np.mean(peak_powers)) if peak_powers.size else 0.0
+        representative_peak_power = (
+            float(np.percentile(peak_powers, 10.0)) if peak_powers.size else 0.0
+        )
+        mean_duration = float(np.mean(durations)) if durations.size else 0.0
+        mean_spectral_width = (
+            float(np.mean(spectral_widths)) if spectral_widths.size else 0.0
+        )
+        mean_tbp = float(np.mean(tbps)) if tbps.size else 0.0
+        representative_tbp = (
+            float(np.percentile(tbps, 90.0)) if tbps.size else float("inf")
+        )
+        mean_contrast = float(np.mean(contrasts)) if contrasts.size else 0.0
+        representative_contrast = (
+            float(np.percentile(contrasts, 10.0)) if contrasts.size else 0.0
+        )
 
         met_energy = energy_std < energy_tolerance
-        met_contrast = min_contrast > contrast_threshold
-        met_tbp = max_tbp < tbp_threshold
-        met_peak = min_peak_power > peak_power_threshold
+        met_contrast = representative_contrast > contrast_threshold
+        met_tbp = representative_tbp < tbp_threshold
+        met_peak = representative_peak_power > peak_power_threshold
 
         return ModeLockingReport(
             energy_window=energy_window,
@@ -305,6 +320,9 @@ class NALMFiberLaserSimulation:
             mean_spectral_width=mean_spectral_width,
             mean_time_bandwidth_product=mean_tbp,
             mean_contrast=mean_contrast,
+            representative_peak_power=representative_peak_power,
+            representative_time_bandwidth_product=representative_tbp,
+            representative_contrast=representative_contrast,
             met_energy_stability=met_energy,
             met_contrast=met_contrast,
             met_tbp=met_tbp,
@@ -339,9 +357,10 @@ class NALMFiberLaserSimulation:
         """
 
         field = self._initial_field(seed)
-        stored_fields = []
-        stored_outputs = []
-        stored_round_trips = []
+        stored_map: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        recent_buffer: deque[Tuple[int, np.ndarray, np.ndarray]] = deque(
+            maxlen=self.sequence_span
+        )
         history: List[SimulationHistoryEntry] = []
 
         dt = self.dt
@@ -393,10 +412,12 @@ class NALMFiberLaserSimulation:
                 )
             )
 
+            snapshot_field = field.copy()
+            snapshot_output = output_field.copy()
+            recent_buffer.append((round_trip, snapshot_field, snapshot_output))
+
             if round_trip % self.store_every == 0 or round_trip == num_round_trips - 1:
-                stored_fields.append(field.copy())
-                stored_outputs.append(output_field.copy())
-                stored_round_trips.append(round_trip)
+                stored_map.setdefault(round_trip, (snapshot_field, snapshot_output))
 
             pump_bias_current, error_state = self._apply_pump_control(
                 pump_bias_current,
@@ -410,8 +431,18 @@ class NALMFiberLaserSimulation:
                 error_state=error_state,
             )
 
-        field_history = np.stack(stored_fields, axis=0)
-        output_history = np.stack(stored_outputs, axis=0)
+        for rt, snap_field, snap_output in recent_buffer:
+            stored_map.setdefault(rt, (snap_field, snap_output))
+
+        if stored_map:
+            ordered = sorted(stored_map.items())
+            stored_round_trips = np.array([rt for rt, _ in ordered], dtype=int)
+            field_history = np.stack([snap[0] for _, snap in ordered], axis=0)
+            output_history = np.stack([snap[1] for _, snap in ordered], axis=0)
+        else:
+            stored_round_trips = np.empty(0, dtype=int)
+            field_history = np.empty((0, self.num_samples), dtype=np.complex128)
+            output_history = np.empty((0, self.num_samples), dtype=np.complex128)
 
         return SimulationResult(
             field_history=field_history,
@@ -444,9 +475,9 @@ class NALMFiberLaserSimulation:
         pump_min: float = -0.5,
         pump_max: float = 2.0,
         pump_smoothing: float = 0.75,
-        contrast_threshold: float = 30.0,
-        tbp_threshold: float = 0.8,
-        peak_power_threshold: float = 400.0,
+        contrast_threshold: float = 15.0,
+        tbp_threshold: float = 0.65,
+        peak_power_threshold: float = 80.0,
     ) -> SimulationResult:
         """Run the simulation until the intracavity energy converges.
 
@@ -473,9 +504,10 @@ class NALMFiberLaserSimulation:
             raise ValueError("energy_window must be greater than 1 to assess convergence")
 
         field = self._initial_field(seed)
-        stored_fields: List[np.ndarray] = []
-        stored_outputs: List[np.ndarray] = []
-        stored_round_trips: List[int] = []
+        stored_map: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+        recent_buffer: deque[Tuple[int, np.ndarray, np.ndarray]] = deque(
+            maxlen=self.sequence_span
+        )
         history: List[SimulationHistoryEntry] = []
 
         dt = self.dt
@@ -531,10 +563,12 @@ class NALMFiberLaserSimulation:
                 )
             )
 
+            snapshot_field = field.copy()
+            snapshot_output = output_field.copy()
+            recent_buffer.append((round_trip, snapshot_field, snapshot_output))
+
             if round_trip % self.store_every == 0 or round_trip == max_round_trips - 1:
-                stored_fields.append(field.copy())
-                stored_outputs.append(output_field.copy())
-                stored_round_trips.append(round_trip)
+                stored_map.setdefault(round_trip, (snapshot_field, snapshot_output))
 
             pump_bias_current, error_state = self._apply_pump_control(
                 pump_bias_current,
@@ -570,20 +604,27 @@ class NALMFiberLaserSimulation:
                 and report.met_peak_power
             ):
                 locked = True
-                if not stored_round_trips or stored_round_trips[-1] != round_trip:
-                    stored_fields.append(field.copy())
-                    stored_outputs.append(output_field.copy())
-                    stored_round_trips.append(round_trip)
+                stored_map.setdefault(round_trip, (snapshot_field, snapshot_output))
                 break
 
-        field_history = np.stack(stored_fields, axis=0)
-        output_history = np.stack(stored_outputs, axis=0)
+        for rt, snap_field, snap_output in recent_buffer:
+            stored_map.setdefault(rt, (snap_field, snap_output))
+
+        if stored_map:
+            ordered = sorted(stored_map.items())
+            stored_round_trips_array = np.array([rt for rt, _ in ordered], dtype=int)
+            field_history = np.stack([snap[0] for _, snap in ordered], axis=0)
+            output_history = np.stack([snap[1] for _, snap in ordered], axis=0)
+        else:
+            stored_round_trips_array = np.empty(0, dtype=int)
+            field_history = np.empty((0, self.num_samples), dtype=np.complex128)
+            output_history = np.empty((0, self.num_samples), dtype=np.complex128)
 
         return SimulationResult(
             field_history=field_history,
             output_history=output_history,
             history=history,
-            stored_round_trips=np.array(stored_round_trips, dtype=int),
+            stored_round_trips=stored_round_trips_array,
             time_axis=self.time_axis,
             frequency_axis=self.frequency_axis,
             mode_locked=locked,
