@@ -14,15 +14,22 @@ function field = propagate_passive_fiber(field, length_m, fiber, grid)
 %   frequency domain with a half-step before and after each nonlinear RK4
 %   update.
 
-    arguments
-        field (:,1) double
-        length_m (1,1) double {mustBeNonnegative}
-        fiber.beta2 (1,1) double
-        fiber.gamma (1,1) double
-        fiber.alpha (1,1) double
-        fiber.dz (1,1) double {mustBePositive}
-        grid struct
+    % Basic input validation that works on older MATLAB releases without the
+    % "arguments" block feature.
+    validateattributes(field, {'double'}, {'column'});
+    validateattributes(length_m, {'double'}, {'scalar', 'nonnegative'});
+    validateattributes(fiber, {'struct'}, {'scalar'});
+    requiredFiberFields = {'beta2', 'gamma', 'alpha', 'dz'};
+    for k = 1:numel(requiredFiberFields)
+        assert(isfield(fiber, requiredFiberFields{k}), ...
+            'propagate_passive_fiber:MissingField', ...
+            'Fiber struct must define "%s".', requiredFiberFields{k});
     end
+    validateattributes(fiber.beta2, {'double'}, {'scalar'});
+    validateattributes(fiber.gamma, {'double'}, {'scalar'});
+    validateattributes(fiber.alpha, {'double'}, {'scalar'});
+    validateattributes(fiber.dz, {'double'}, {'scalar', 'positive'});
+    validateattributes(grid, {'struct'}, {'scalar'});
 
     if length_m == 0 || all(field == 0)
         return;
