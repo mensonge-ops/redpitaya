@@ -1,4 +1,4 @@
-function [u_out, Plotdata] = apply_cfbg(u_in, cfbg, fo, df, c)
+function [u_out, Plotdata] = apply_cfbg(u_in, cfbg, fo, df, c, capture)
 %APPLY_CFBG   Apply a Gaussian-profiled chirped fibre Bragg grating
 %   [u_out, Plotdata] = APPLY_CFBG(u_in, cfbg, fo, df, c) multiplies the
 %   field u_in by the complex transfer function of a CFBG described by
@@ -50,9 +50,17 @@ Uo = ifftshift(Uo_shift);
 
 u_out = ifft(Uo);
 
+if nargin < 6
+    capture = true;
+end
+
 % Diagnostics for downstream plots
-Plotdata.ufft = repmat(abs(fftshift(fft(u_out))), 20, 1);
-Plotdata.u = repmat(u_out, 20, 1);
-Plotdata.transfer = transfer;
+if capture
+    Plotdata.ufft = repmat(abs(fftshift(fft(u_out))), 20, 1);
+    Plotdata.u = repmat(u_out, 20, 1);
+    Plotdata.transfer = transfer;
+else
+    Plotdata = struct('ufft', [], 'u', [], 'transfer', transfer);
+end
 
 end
