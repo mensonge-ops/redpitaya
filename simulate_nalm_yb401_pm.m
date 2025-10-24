@@ -5,7 +5,7 @@
 % The implementation is derived from the reference CQEM/IP solver example
 % and keeps the same numerical core while updating the fibre, gain and
 % filtering parameters to reflect a realistic Yb-fibre cavity operating at
-% ~1030 nm.
+% ~1030 nm with a chirped FBG in the linear arm.
 %
 % Datasheet numbers for Yb401-PM (typical values, Nufern rev. K) were used
 % wherever possible:
@@ -76,18 +76,21 @@ smf_output.L = 0.0006;                  % 0.6 m
 %% ------------------------ Output branch gain ---------------------------
 amf_main = amf_nalm;                    % main loop gain fibre
 amf_main.L = 0.0005;                    % 0.5 m active Yb fibre
-amf_main.gssdB = 32;                    % small signal gain (dB)
+amf_main.gssdB = 36;                    % boosted small-signal gain (dB)
 
-%% --------------------------- Filter section ----------------------------
-filter.lamda_c = lamda_pulse;           % central wavelength (nm)
-filter.landa_bw = 4;                    % 4 nm passband
-filter.fc = c/filter.lamda_c;           % THz
-filter.f3dB = c/(filter.lamda_c)^2*filter.landa_bw;
-filter.n = 1;                           % Gaussian filter order
+%% --------------------- Chirped FBG in linear arm -----------------------
+cfbg.lambda_c = lamda_pulse;            % central wavelength (nm)
+cfbg.bandwidth = 20;                    % spectral FWHM (nm)
+cfbg.reflectivity = 0.20;               % peak reflectivity (power)
+cfbg.dispersion = 0.1;                  % ps/nm group delay slope
+cfbg.fc = c/cfbg.lambda_c;              % central frequency (THz)
+cfbg.beta2 = -cfbg.dispersion*(cfbg.lambda_c^2)/(2*pi*c); % ps^2
+fprintf('CFBG: %.1f%% peak reflectivity, %.2f ps^2 GDD, %.1f nm FWHM.\n', ...
+        cfbg.reflectivity*100, cfbg.beta2, cfbg.bandwidth);
 
 %% ------------------------------ Couplers -------------------------------
-rho = 0.55;                             % NALM coupler splitting ratio
-rho_out = 0.3;                          % output coupler
+rho = 0.5;                              % NALM coupler splitting ratio
+rho_out = 0.2;                          % output coupler reflectivity
 
 %% --------------------------- Numerical grid ----------------------------
 nt = 2^12;                              % number of temporal samples
@@ -110,7 +113,7 @@ tol = 1e-4;                             % adaptive tolerance
 P_peak = 2*N2*abs(ybfibre.betaw(3))/ybfibre.gamma/tfwhm^2;
 u0 = sqrt(P_peak)*sech(t/tfwhm);
 randn('state', 0);                      % reproducible seed
-u0 = (1 + 2e-3*randn(1,nt)).*u0;        % add weak noise to seed self-start
+u0 = (1 + 5e-3*randn(1,nt)).*u0;        % add weak noise to seed self-start
 
 PeakPower = max(abs(u0).^2);
 fprintf('\n----------------------------------------------\n');
@@ -125,7 +128,7 @@ spec_z = [];
 u_z = [];
 
 u = u0;
-N_trip = 40;                            % number of cavity round trips
+N_trip = 80;                            % number of cavity round trips
 h1 = waitbar(0, 'Running Yb401-PM NALM simulation...');
 
 for ii = 1:N_trip
@@ -157,8 +160,8 @@ for ii = 1:N_trip
     [u, ~, Plot_smf_pre] = IP_CQEM_FD(u, dt, dz, smf_pre, fo, tol, 1, 1);
     [u, uout] = coupler(u, 0, rho_out);
 
-    % spectral filter
-    u = filter_gauss(u, filter.f3dB, filter.fc, filter.n, fo, df);
+    % chirped fibre Bragg grating response (linear arm reflector)
+    [u, Plot_cfbg] = apply_cfbg(u, cfbg, fo, df, c);
 
     % diagnostics
     figure(1); clf;
@@ -221,10 +224,9 @@ title('Output intensity and instantaneous frequency');
 % replicate traces to follow layout of original diagnostic plots
 ut_fft = repmat(abs(fftshift(fft(ut))), 20, 1);
 uout_fft = repmat(abs(fftshift(fft(uout))), 20, 1);
-u_f_fft = repmat(abs(fftshift(fft(u))), 20, 1);
 
 Plotdata.ufft = [Plot_smf_link.ufft; Plot_amf_main.ufft; Plot_smf_output.ufft; ...
-                 ut_fft; Plot_smf_pre.ufft; uout_fft; u_f_fft];
+                 ut_fft; Plot_smf_pre.ufft; uout_fft; Plot_cfbg.ufft];
 
 spec = abs(Plotdata.ufft').^2;
 specnorm = spec ./ (lambda'*ones(1, size(spec,2))).^2;
@@ -240,9 +242,8 @@ view(0, 90);
 
 ut_t = repmat(ut, 20, 1);
 uout_t = repmat(uout, 20, 1);
-u_f_t = repmat(u, 20, 1);
 Plotdata.u = [Plot_smf_link.u; Plot_amf_main.u; Plot_smf_output.u; ...
-              ut_t; Plot_smf_pre.u; uout_t; u_f_t];
+              ut_t; Plot_smf_pre.u; uout_t; Plot_cfbg.u];
 
 figure(7);
 surf(t, 1:size(Plotdata.u,1), abs(Plotdata.u).^2);
